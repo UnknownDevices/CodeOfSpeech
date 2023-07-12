@@ -35,9 +35,14 @@ module.exports = (Plugin, Api) => {
       );
     }
 
+    // TODO:
+
+    // TODO: force reload when selected code is changed
     getSettingsPanel() {
       const elems = [];
       {
+        const curr = this.defaultCodeSelection;
+
         const values = [];
         for (const codesKey in this.codes) {
           values.push({
@@ -47,16 +52,29 @@ module.exports = (Plugin, Api) => {
         }
         values.push({ label: "None", value: { option: 1 } });
 
-        const curr = this.defaultCodeSelection;
+        let defaultValue = values.find(
+          (value) =>
+            value.value.option === curr.option && value.value.id === curr.id
+        )?.value;
+        if (defaultValue == null) {
+          const value = {
+            label: this.resolveCodeSelectionLabel(curr),
+            value: { option: 2, id: this.resolveCodeSelectionId(curr) },
+          };
+          values.unshift(value);
+          defaultValue = value.value;
+
+          // BdApi.UI.showNotice(
+          //   `[Code of Speech] - The code '${value.value.id}' which is selected as the default code is not currently loaded`,
+          //   { type: "warning", timeout: 0 }
+          // );
+        }
+
         elems.push(
           new Api.Settings.Dropdown(
             "Default Code",
             "The code to be used by default on all channels.",
-            values.find(
-              (value) =>
-                value.value.option === curr.option &&
-                (curr.option !== 2 || value.value.id === curr.id)
-            )?.value ?? values[values.length - 1].value, // TODO: properly handle null
+            defaultValue, // TODO: properly handle null
             values,
             (value) => {
               const data = Utilities.loadSettings(this.meta.name, {});
@@ -141,7 +159,7 @@ module.exports = (Plugin, Api) => {
         ? "Use Default"
         : code.option === 1
         ? "None"
-        : "● " + code.id;
+        : "● " + code.id + (this.codes[code.id] ? "" : " (unloaded)");
     }
 
     resolveCodeSelectionId(code) {
@@ -172,7 +190,25 @@ module.exports = (Plugin, Api) => {
       Utilities.saveData(this.meta.name, userId, data);
     }
 
+    refreshCodes() {
+      fs.readFile(
+        `${process.env.APPDATA}/BetterDiscord/plugins/${this.meta.name}.config.json`,
+        "utf8",
+        (err, data) => {
+          if (err) {
+            Logger.err(`While refreshing codes: ${err}`);
+            return;
+          }
+
+          data = JSON.parse(data);
+          this.loadCodes(data.codes);
+          Utilities.saveData(this.meta.name, "codes", data.codes);
+        }
+      );
+    }
+
     buildCodeOfSpeechMenuItem(userId, channelId) {
+      // TODO: resolvedSelectedCode
       const selectedCode = this.loadSelectedCode(userId, channelId);
 
       let codeEnablersGroup = {
@@ -190,6 +226,27 @@ module.exports = (Plugin, Api) => {
           },
         ],
       };
+
+      if (selectedCode.option === 2 && !this.codes[selectedCode.id]) {
+        codeEnablersGroup.items.push({
+          type: "radio",
+          label: "● " + selectedCode.id + " (unloaded)",
+          checked: true,
+          disabled: true,
+          action: () => {},
+        });
+      } else if (
+        this.defaultCodeSelection.option === 2 &&
+        !this.codes[this.defaultCodeSelection.id]
+      ) {
+        codeEnablersGroup.items.push({
+          type: "radio",
+          label: "● " + this.defaultCodeSelection.id + " (unloaded)",
+          checked: false,
+          disabled: true,
+          action: () => {},
+        });
+      }
 
       for (const codesKey in this.codes) {
         codeEnablersGroup.items.push({
@@ -222,21 +279,7 @@ module.exports = (Plugin, Api) => {
           {
             type: "text",
             label: "Refresh Codes",
-            action: () =>
-              fs.readFile(
-                `${process.env.APPDATA}/BetterDiscord/plugins/${this.meta.name}.config.json`,
-                "utf8",
-                (err, data) => {
-                  if (err) {
-                    Logger.err(`While refreshing codes: ${err}`);
-                    return;
-                  }
-
-                  data = JSON.parse(data);
-                  this.loadCodes(data.codes);
-                  Utilities.saveData(this.meta.name, "codes", data.codes);
-                }
-              ),
+            action: this.refreshCodes.bind(this),
           },
         ],
       };
@@ -251,6 +294,8 @@ module.exports = (Plugin, Api) => {
       });
     }
 
+    // TODO: return true to call the origFunc, false otherwise
+    // TODO: look into notice buttons, perhaps add a way to silence this warning
     HandleOnSubmit(instance, args, origFunc) {
       const [text, command] = args;
 
@@ -261,9 +306,17 @@ module.exports = (Plugin, Api) => {
         )
       );
 
-      if (command || !selectedCodeId) return origFunc(...args);
+      if (command || selectedCodeId == null) return origFunc(...args);
 
       const code = this.codes[selectedCodeId];
+      if (!code) {
+        BdApi.UI.showNotice(
+          `[Code of Speech] - The code selected for this channel is not currently loaded`,
+          { type: "warning", timeout: 8000 }
+        );
+
+        return origFunc(...args);
+      }
 
       let abortSubmit = false;
       for (const rulesKey in code.rules) {
@@ -275,10 +328,8 @@ module.exports = (Plugin, Api) => {
           });
 
           Api.Toasts.warning(message, {
-            type: "warn",
             timeout: 5000,
           });
-          Logger.warn(message);
         }
       }
 
@@ -527,9 +578,7 @@ module.exports = (Plugin, Api) => {
           );
 
           if (!regex)
-            patterns = patterns.map((pattern) =>
-              this.escapeRegSpecialChars(pattern)
-            );
+            patterns = patterns.map(this.escapeRegSpecialChars.bind(this));
 
           const matchRegExpr = new RegExp(
             this.combineRegStrs(patterns),
@@ -576,7 +625,7 @@ module.exports = (Plugin, Api) => {
           );
 
           if (!regex)
-            words = words.map((word) => this.escapeRegSpecialChars(word));
+            words = words.map(this.escapeRegSpecialChars.bind(this));
 
           const matchRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
@@ -625,7 +674,7 @@ module.exports = (Plugin, Api) => {
           );
 
           if (!regex)
-            words = words.map((word) => this.escapeRegSpecialChars(word));
+            words = words.map(this.escapeRegSpecialChars.bind(this));
 
           const matchRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
@@ -783,8 +832,8 @@ module.exports = (Plugin, Api) => {
       };
     }
 
+    // TODO: customizable code violation toast timeout
     // TODO: custom exclude for empty messages
-    // TODO: if ID of rule is not recognized then add as an extra disable option
     // TODO: enumerate rules
     // TODO: exclude code blocks
     // TODO: mute channel is not found if the channel is muted
@@ -794,6 +843,7 @@ module.exports = (Plugin, Api) => {
     // TODO: enforce length of code names and rule names, also enforece only using alphanumeric values and spaces
     // TODO: exclude RPNonDialogue and exclude vocalizations
     // TODO: display a toast or something when the codes are refreshed
+    // TODO: display notice when a rule or code fails to load
 
     onStart() {
       this.loadReg();
