@@ -159,7 +159,7 @@ module.exports = (Plugin, Api) => {
         ? "Use Default"
         : code.option === 1
         ? "None"
-        : "● " + code.id + (this.codes[code.id] ? "" : " (unloaded)");
+        : "● " + code.id;
     }
 
     resolveCodeSelectionId(code) {
@@ -208,7 +208,6 @@ module.exports = (Plugin, Api) => {
     }
 
     buildCodeOfSpeechMenuItem(userId, channelId) {
-      // TODO: resolvedSelectedCode
       const selectedCode = this.loadSelectedCode(userId, channelId);
 
       let codeEnablersGroup = {
@@ -219,6 +218,9 @@ module.exports = (Plugin, Api) => {
             label: "Use Default",
             subtext: this.resolveCodeSelectionLabel(this.defaultCodeSelection),
             checked: selectedCode.option === 0,
+            disabled:
+              this.defaultCodeSelection.option === 2 &&
+              !this.codes[this.defaultCodeSelection.id],
             action: () => {
               this.saveSelectedCode(userId, channelId, { option: 0 });
               Api.ContextMenu.forceUpdateMenus();
@@ -230,19 +232,8 @@ module.exports = (Plugin, Api) => {
       if (selectedCode.option === 2 && !this.codes[selectedCode.id]) {
         codeEnablersGroup.items.push({
           type: "radio",
-          label: "● " + selectedCode.id + " (unloaded)",
+          label: "● " + selectedCode.id,
           checked: true,
-          disabled: true,
-          action: () => {},
-        });
-      } else if (
-        this.defaultCodeSelection.option === 2 &&
-        !this.codes[this.defaultCodeSelection.id]
-      ) {
-        codeEnablersGroup.items.push({
-          type: "radio",
-          label: "● " + this.defaultCodeSelection.id + " (unloaded)",
-          checked: false,
           disabled: true,
           action: () => {},
         });
@@ -624,8 +615,7 @@ module.exports = (Plugin, Api) => {
             "gu"
           );
 
-          if (!regex)
-            words = words.map(this.escapeRegSpecialChars.bind(this));
+          if (!regex) words = words.map(this.escapeRegSpecialChars.bind(this));
 
           const matchRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
@@ -637,7 +627,6 @@ module.exports = (Plugin, Api) => {
 
           return {
             apply: (text) => {
-              Logger.info(text);
               text = text.replace(excludeRegExpr, "");
               return (text.match(matchRegExpr) == null) ^ !negate;
             },
@@ -673,8 +662,7 @@ module.exports = (Plugin, Api) => {
             "gu"
           );
 
-          if (!regex)
-            words = words.map(this.escapeRegSpecialChars.bind(this));
+          if (!regex) words = words.map(this.escapeRegSpecialChars.bind(this));
 
           const matchRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
@@ -719,7 +707,6 @@ module.exports = (Plugin, Api) => {
             apply: (text) => {
               text = text.replace(excludeRegExpr, "");
               const words = text.match(this.regExprs.word) || [];
-              Logger.info(words.length);
 
               // TODO: always count the syllables of all words
 
@@ -766,6 +753,13 @@ module.exports = (Plugin, Api) => {
     loadCodes(codesData) {
       this.codes = {};
       for (const codesDataKey in codesData) {
+        if (!codesDataKey.match(this.regExprs.validCodeName)) {
+          Logger.err(
+            `While loading '${codesDataKey}' code: the name for the code can only contain alphanumerics, underscores, dashes, apostrophes, and spaces, it must not begin nor end with a space, and it must be no longer than 20 characters`
+          );
+          continue;
+        }
+
         const codeData = codesData[codesDataKey];
 
         if (
@@ -790,6 +784,13 @@ module.exports = (Plugin, Api) => {
         };
 
         for (const rulesDataKey in codeData.rules) {
+          if (!rulesDataKey.match(this.regExprs.validRuleName)) {
+            Logger.err(
+              `While loading '${codesDataKey}' code: the name for the code can only contain alphanumerics, underscores, dashes, apostrophes, and spaces, it must not begin nor end with a space, and it must be no longer than 40 characters`
+            );
+            continue;
+          }
+
           const ruleData = codeData.rules[rulesDataKey];
 
           if (
@@ -813,6 +814,8 @@ module.exports = (Plugin, Api) => {
           this.codes[codesDataKey].rules[rulesDataKey] = rule;
         }
       }
+
+      Logger.info("Finished loading codes");
     }
 
     loadReg() {
@@ -829,6 +832,8 @@ module.exports = (Plugin, Api) => {
         capitalizedWord: /(?<!\w'?)[A-Z]\w*('\w+)?/g,
         word: /(?<!\w'?)\w+('\w+)?/g,
         regSpecialChars: /[.*+?^${}()|[\]\\]/g,
+        validCodeName: /^(?! )[\w-' ]{0,20}(?<! )$/,
+        validRuleName: /^(?! )[\w-' ]{0,40}(?<! )$/,
       };
     }
 
