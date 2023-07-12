@@ -1,0 +1,15 @@
+{
+  "info": {
+    "name": "CodeOfSpeech",
+    "authors": [
+      {
+        "name": "UnknownDevices",
+        "discord_id": "740584463532032071",
+        "github_username": "UnknownDevices"
+      }
+    ],
+    "version": "0.1.0",
+    "description": "Code of Speech"
+  },
+  "main": "index.js"
+}
