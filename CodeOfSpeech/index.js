@@ -379,7 +379,33 @@ module.exports = (Plugin, Api) => {
               (
                 props.channel.type === 0 || // GUILD_TEXT
                 props.channel.type === 5 || // GUILD_ANNOUNCEMENT
-                props.channel.type === 10 || // ANNOUNCEMENT_THREAD
+                props.channel.type === 10
+              ) // ANNOUNCEMENT_THREAD
+            )
+          )
+            return;
+
+          this.insertBeforeReactElem(
+            menu,
+            (elem) =>
+              elem?.props?.id === "mute-channel" ||
+              elem?.props?.id === "unmute-channel",
+            () => [
+              this.buildCodeOfSpeechMenuItem(
+                DiscordModules.UserStore.getCurrentUser()?.id,
+                props.channel.id
+              ),
+              Api.ContextMenu.buildMenuItem({ type: "separator" }),
+            ],
+            5
+          );
+        }),
+
+        BdApi.ContextMenu.patch("thread-context", (menu, props) => {
+          if (
+            !props?.channel?.id ||
+            !(
+              (
                 props.channel.type === 11 || // PUBLIC_THREAD
                 props.channel.type === 12
               ) // PRIVATE_THREAD
@@ -489,8 +515,11 @@ module.exports = (Plugin, Api) => {
 
           let excludeRegStrs = [];
           if (excludeUrls) excludeRegStrs.push(this.regStrs.url);
-          // TODO: also exclude emojiIds if true
-          if (excludeEmojis) excludeRegStrs.push(this.regStrs.unicodeEmoji);
+          if (excludeEmojis)
+            excludeRegStrs.push(
+              this.regStrs.unicodeEmoji,
+              this.regStrs.emojiId
+            );
 
           const excludeRegExpr = new RegExp(
             this.combineRegStrs(excludeRegStrs),
@@ -538,7 +567,11 @@ module.exports = (Plugin, Api) => {
             return "'unicode' must be a boolean";
 
           const excludeRegExpr = new RegExp(
-            this.combineRegStrs([this.regStrs.url, this.regStrs.unicodeEmoji]),
+            this.combineRegStrs([
+              this.regStrs.url,
+              this.regStrs.unicodeEmoji,
+              this.regStrs.emojiId,
+            ]),
             "gu"
           );
 
@@ -555,6 +588,7 @@ module.exports = (Plugin, Api) => {
 
           return {
             apply: (text) => {
+              Logger.info(text);
               text = text.replace(excludeRegExpr, "");
               return (text.match(matchRegExpr) == null) ^ !negate;
             },
@@ -582,7 +616,11 @@ module.exports = (Plugin, Api) => {
             return "'caseInsensitive' must be a boolean";
 
           const excludeRegExpr = new RegExp(
-            this.combineRegStrs([this.regStrs.url, this.regStrs.unicodeEmoji]),
+            this.combineRegStrs([
+              this.regStrs.url,
+              this.regStrs.unicodeEmoji,
+              this.regStrs.emojiId,
+            ]),
             "gu"
           );
 
@@ -623,7 +661,10 @@ module.exports = (Plugin, Api) => {
           if (typeof max !== "number") return "'max' must be a number";
           if (typeof negate !== "boolean") return "'negate' must be a boolean";
 
-          const excludeRegExpr = new RegExp(this.regStrs.url, "gu");
+          const excludeRegExpr = new RegExp(
+            this.combineRegStrs([this.regStrs.url, this.regStrs.emojiId]),
+            "gu"
+          );
 
           return {
             apply: (text) => {
@@ -654,7 +695,10 @@ module.exports = (Plugin, Api) => {
           if (typeof excludeFullCaps !== "boolean")
             return "'excludeFullCaps' must be a boolean";
 
-          const excludeRegExpr = new RegExp(this.regStrs.url, "gu");
+          const excludeRegExpr = new RegExp(
+            this.combineRegStrs([this.regStrs.url, this.regStrs.emojiId]),
+            "gu"
+          );
 
           const matchRegExpr = excludeFullCaps
             ? this.regExprs.notFullCapsCapitalizedWord
@@ -727,6 +771,7 @@ module.exports = (Plugin, Api) => {
         url: "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*)",
         unicodeEmoji:
           "(\\p{Extended_Pictographic}\\u{200D})*\\p{Extended_Pictographic}\\u{FE0F}?",
+        emojiId: "<a?:[\\w~]{2,}:\\d{18}>",
       };
 
       this.regExprs = {
