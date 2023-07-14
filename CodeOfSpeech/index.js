@@ -9,15 +9,338 @@ module.exports = (Plugin, Api) => {
   const {
     DiscordModules,
     DiscordSelectors,
+    DiscordClasses,
+    Settings,
     Utilities,
     ReactTools,
     Logger,
+    DOMTools,
     Patcher,
+    WebpackModules,
   } = Api;
 
   const { UserStore } = DiscordModules;
 
-  // TODO: handle id of code being no longer existant everywhere
+  /**
+   * Setting field to extend to create new settings
+   * @memberof module:Settings
+   */
+  class SettingField extends Api.Structs.Listenable {
+    /**
+     * @param {string} name - name label of the setting
+     * @param {string} note - help/note to show underneath or above the setting
+     * @param {callable} onChange - callback to perform on setting change
+     * @param {(ReactComponent|HTMLElement)} settingtype - actual setting to render
+     * @param {object} [props] - object of props to give to the setting and the settingtype
+     * @param {boolean} [props.noteOnTop=false] - determines if the note should be shown above the element or not.
+     */
+    constructor(name, note, onChange, settingtype, props = {}) {
+      super();
+      this.name = name;
+      this.note = note;
+      if (typeof onChange == "function") this.addListener(onChange);
+      this.inputWrapper = DOMTools.parseHTML(
+        `<div class="plugin-input-container"></div>`
+      );
+      this.type =
+        typeof settingtype == "function"
+          ? settingtype
+          : ReactTools.wrapElement(settingtype);
+      this.props = props;
+      DOMTools.onAdded(this.getElement(), () => {
+        this.onAdded();
+      });
+      DOMTools.onRemoved(this.getElement(), () => {
+        this.onRemoved();
+      });
+    }
+
+    /** @returns {HTMLElement} - root element for setting */
+    getElement() {
+      return this.inputWrapper;
+    }
+
+    /** Fires onchange to listeners */
+    onChange() {
+      this.alertListeners(...arguments);
+    }
+
+    /** Fired when root node added to DOM */
+    onAdded() {
+      const reactElement = DiscordModules.ReactDOM.render(
+        DiscordModules.React.createElement(
+          ReactSetting,
+          Object.assign(
+            {
+              title: this.name,
+              type: this.type,
+              note: this.note,
+            },
+            this.props
+          )
+        ),
+        this.getElement()
+      );
+
+      if (this.props.onChange)
+        reactElement.props.onChange = this.props.onChange(reactElement);
+      reactElement.forceUpdate();
+    }
+
+    /** Fired when root node removed from DOM */
+    onRemoved() {
+      DiscordModules.ReactDOM.unmountComponentAtNode(this.getElement());
+    }
+  }
+
+  class ReactSetting extends DiscordModules.React.Component {
+    get noteElement() {
+      const className = this.props.noteOnTop
+        ? DiscordClasses.Margins.marginBottom8
+        : DiscordClasses.Margins.marginTop8;
+      return DiscordModules.React.createElement(DiscordModules.SettingsNote, {
+        children: this.props.note,
+        type: "description",
+        className: className.toString(),
+      });
+    }
+
+    get dividerElement() {
+      return DiscordModules.React.createElement("div", {
+        className: DiscordClasses.Dividers.divider
+          .add(DiscordClasses.Margins.marginTop20)
+          .toString(),
+      });
+    }
+
+    render() {
+      const ce = DiscordModules.React.createElement;
+      const SettingElement = ce(this.props.type, this.props);
+      if (this.props.inline) {
+        const Flex = DiscordModules.FlexChild;
+        const titleDefault = WebpackModules.getByProps("titleDefault")
+          ? WebpackModules.getByProps("titleDefault").title
+          : "titleDefault-a8-ZSr title-31JmR4";
+        return ce(
+          Flex,
+          {
+            direction: Flex.Direction.VERTICAL,
+            className: DiscordClasses.Margins.marginTop20.toString(),
+          },
+          ce(
+            Flex,
+            { align: Flex.Align.START },
+            ce(
+              Flex.Child,
+              { wrap: !0 },
+              ce("div", { className: titleDefault }, this.props.title)
+            ),
+            ce(Flex.Child, { grow: 0, shrink: 0 }, SettingElement)
+          ),
+          this.noteElement,
+          this.dividerElement
+        );
+      }
+
+      return ce(DiscordModules.SettingsWrapper, {
+        className: DiscordClasses.Margins.marginTop20.toString(),
+        title: this.props.title,
+        children: [
+          this.props.noteOnTop ? this.noteElement : SettingElement,
+          this.props.noteOnTop ? SettingElement : this.noteElement,
+          this.dividerElement,
+        ],
+      });
+    }
+  }
+
+  const React = DiscordModules.React;
+
+  class CloseButton extends React.Component {
+    render() {
+      const size = this.props.size || "14px";
+      return React.createElement(
+        "svg",
+        {
+          className: this.props.className || "",
+          fill: "currentColor",
+          viewBox: "0 0 24 24",
+          style: { width: size, height: size },
+          onClick: this.props.onClick,
+        },
+        React.createElement("path", {
+          d: "M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z",
+        })
+      );
+    }
+  }
+
+  class DownArrow extends React.Component {
+    render() {
+      const size = this.props.size || "16px";
+      return React.createElement(
+        "svg",
+        {
+          className: this.props.className || "",
+          fill: "currentColor",
+          viewBox: "0 0 24 24",
+          style: { width: size, height: size },
+          onClick: this.props.onClick,
+        },
+        React.createElement("path", {
+          d: "M8.12 9.29L12 13.17l3.88-3.88c.39-.39 1.02-.39 1.41 0 .39.39.39 1.02 0 1.41l-4.59 4.59c-.39.39-1.02.39-1.41 0L6.7 10.7c-.39-.39-.39-1.02 0-1.41.39-.38 1.03-.39 1.42 0z",
+        })
+      );
+    }
+  }
+
+  // <svg class="closeIcon-11LhXr" aria-hidden="false" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"></path></svg>
+
+  class Select extends React.Component {
+    constructor(props) {
+      super(props);
+      this.state = { open: false, value: this.props.value };
+      this.dropdown = React.createRef();
+      this.onChange = this.onChange.bind(this);
+      this.showMenu = this.showMenu.bind(this);
+      this.hideMenu = this.hideMenu.bind(this);
+      this.clear = this.clear.bind(this);
+    }
+
+    showMenu(event) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      this.setState(
+        (state) => ({ open: !state.open }),
+        () => {
+          if (!this.state.open) return;
+
+          document.addEventListener("click", this.hideMenu);
+        }
+      );
+    }
+
+    hideMenu() {
+      this.setState({ open: false }, () => {
+        document.removeEventListener("click", this.hideMenu);
+      });
+    }
+
+    onChange(value) {
+      this.setState({ value });
+      if (this.props.onChange) this.props.onChange(value);
+    }
+
+    get selected() {
+      return this.props.options.find((o) => o.value == this.state.value);
+    }
+
+    get options() {
+      const selected = this.selected;
+      return React.createElement(
+        "div",
+        { className: "z-select-options" },
+        this.props.options.map((opt) => {
+          if (opt.invisible) return undefined;
+          return React.createElement(
+            "div",
+            {
+              className: `z-select-option${
+                selected?.value == opt.value ? " selected" : ""
+              }`,
+              onClick: this.onChange.bind(this, opt.value),
+            },
+            opt.label
+          )
+
+        }
+        )
+      );
+    }
+
+    clear(event) {
+      event.stopPropagation();
+      this.onChange(null);
+    }
+
+    render() {
+      const style =
+        this.props.style == "transparent" ? " z-select-transparent" : "";
+      const isOpen = this.state.open ? " menu-open" : "";
+      const selected = this.selected;
+      return React.createElement(
+        "div",
+        {
+          className: `z-select${style}${isOpen}`,
+          ref: this.dropdown,
+          onClick: this.showMenu,
+        },
+        [
+          React.createElement(
+            "div",
+            {
+              className: `z-select-value${selected.invisible ? " disabled--8Sav3" : ""}`,
+            },
+            selected?.label ?? this.props.placeholder
+          ),
+          React.createElement(
+            "div",
+            { className: "z-select-icons" },
+            this.props.clearable &&
+              selected &&
+              React.createElement(CloseButton, {
+                className: "z-select-clear",
+                onClick: this.clear,
+              }),
+            React.createElement(DownArrow, { className: "z-select-arrow" })
+          ),
+          this.state.open && this.options,
+        ]
+      );
+    }
+  }
+
+  /**
+   * Creates a dropdown using discord's built in dropdown.
+   * @memberof module:Settings
+   * @extends module:Settings.SettingField
+   */
+  class Dropdown extends SettingField {
+    /**
+     * @param {string} name - name label of the setting
+     * @param {string} note - help/note to show underneath or above the setting
+     * @param {*} defaultValue - currently selected value
+     * @param {Array<module:Settings~DropdownItem>} values - array of all options available
+     * @param {callable} onChange - callback to perform on setting change, callback item value
+     * @param {object} [options] - object of options to give to the setting
+     * @param {boolean} [options.clearable=false] - should be able to empty the field value
+     * @param {string} [options.placeholder=""] - Placeholder to show when no option is selected, useful when clearable
+     * @param {boolean} [options.disabled=false] - should the setting be disabled
+     */
+    constructor(
+      name,
+      note,
+      defaultValue,
+      values,
+      onChange,
+      options = {}
+    ) {
+      const { clearable = false, disabled = false, placeholder = "" } = options;
+      super(name, note, onChange, Select, {
+        placeholder: placeholder,
+        clearable: clearable,
+        disabled: disabled,
+        options: values,
+        onChange: (dropdown) => (value) => {
+          dropdown.props.value = value;
+          dropdown.forceUpdate();
+          this.onChange(value);
+        },
+        value: defaultValue,
+      });
+    }
+  }
 
   return class CodeOfSpeech extends Plugin {
     constructor(meta) {
@@ -35,13 +358,12 @@ module.exports = (Plugin, Api) => {
       );
     }
 
-    // TODO:
-
     // TODO: force reload when selected code is changed
     getSettingsPanel() {
       const elems = [];
+
       {
-        const curr = this.defaultCodeSelection;
+        const current = this.defaultCodeSelection;
 
         const values = [];
         for (const codesKey in this.codes) {
@@ -54,24 +376,22 @@ module.exports = (Plugin, Api) => {
 
         let defaultValue = values.find(
           (value) =>
-            value.value.option === curr.option && value.value.id === curr.id
+            value.value.option === current.option &&
+            value.value.id === current.id
         )?.value;
+
         if (defaultValue == null) {
           const value = {
-            label: this.resolveCodeSelectionLabel(curr),
-            value: { option: 2, id: this.resolveCodeSelectionId(curr) },
+            label: this.resolveCodeSelectionLabel(current),
+            invisible: true,
+            value: { option: 2, id: this.resolveCodeSelectionId(current) },
           };
-          values.unshift(value);
+          values.push(value);
           defaultValue = value.value;
-
-          // BdApi.UI.showNotice(
-          //   `[Code of Speech] - The code '${value.value.id}' which is selected as the default code is not currently loaded`,
-          //   { type: "warning", timeout: 0 }
-          // );
         }
 
         elems.push(
-          new Api.Settings.Dropdown(
+          new Dropdown(
             "Default Code",
             "The code to be used by default on all channels.",
             defaultValue, // TODO: properly handle null
@@ -84,10 +404,11 @@ module.exports = (Plugin, Api) => {
           ).getElement()
         );
       }
+
       {
         const curr = this.codeViolationMsg;
         elems.push(
-          new Api.Settings.Textbox(
+          new Settings.Textbox(
             "Code Violation Message",
             `The message to display on a toast when a code is violated.`,
             curr,
@@ -100,7 +421,7 @@ module.exports = (Plugin, Api) => {
         );
       }
 
-      return new Api.Settings.SettingPanel(null, ...elems).getElement();
+      return new Settings.SettingPanel(null, ...elems).getElement();
     }
 
     insertBeforeReactElem(elem, predicate, buildInsertions, maxDepth) {
@@ -290,11 +611,11 @@ module.exports = (Plugin, Api) => {
     HandleOnSubmit(instance, args, origFunc) {
       const [text, command] = args;
 
+      // TODO: handle null
+      const currentUser = UserStore.getCurrentUser();
+
       const selectedCodeId = this.resolveCodeSelectionId(
-        this.loadSelectedCode(
-          UserStore.getCurrentUser()?.id,
-          instance.props.channel.id
-        )
+        this.loadSelectedCode(currentUser?.id, instance.props.channel.id)
       );
 
       if (command || selectedCodeId == null) return origFunc(...args);
@@ -815,7 +1136,7 @@ module.exports = (Plugin, Api) => {
         }
       }
 
-      Logger.info("Finished loading codes");
+      Logger.info("Done loading codes");
     }
 
     loadReg() {

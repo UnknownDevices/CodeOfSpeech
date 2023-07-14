@@ -5,9 +5,5 @@
   },
   "dependencies": {
     "zerespluginlibrary": "^2.0.6"
-  },
-  "devDependencies": {
-    "ts-loader": "^9.4.4",
-    "typescript": "^5.1.6"
   }
 }
