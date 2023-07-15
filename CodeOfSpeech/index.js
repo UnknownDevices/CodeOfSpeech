@@ -10,6 +10,7 @@ module.exports = (Plugin, Api) => {
     DiscordModules,
     DiscordSelectors,
     DiscordClasses,
+    ContextMenu,
     Settings,
     Utilities,
     ReactTools,
@@ -296,7 +297,7 @@ module.exports = (Plugin, Api) => {
           ),
           this.state.open && this.options,
         ]
-      );;
+      );
     }
   }
 
@@ -446,7 +447,7 @@ module.exports = (Plugin, Api) => {
           }
         } else {
           if (predicate(children)) {
-            elem.props.children = [...buildElems(), elem.props.children];
+            elem.props.children = [buildElems(), elem.props.children];
             return true;
           }
 
@@ -571,8 +572,6 @@ module.exports = (Plugin, Api) => {
           break;
       }
 
-      Logger.info(defaultCodeSelection);
-
       let codeEnablersGroup = {
         type: "group",
         items: [],
@@ -590,7 +589,7 @@ module.exports = (Plugin, Api) => {
           this.saveCodeSelection(currUserId, context.id, contextTy, {
             option: 0,
           });
-          Api.ContextMenu.forceUpdateMenus();
+          ContextMenu.forceUpdateMenus();
         },
       });
 
@@ -625,7 +624,7 @@ module.exports = (Plugin, Api) => {
               option: 2,
               id: codesKey,
             });
-            Api.ContextMenu.forceUpdateMenus();
+            ContextMenu.forceUpdateMenus();
           },
         });
       }
@@ -638,7 +637,7 @@ module.exports = (Plugin, Api) => {
           this.saveCodeSelection(currUserId, context.id, contextTy, {
             option: 1,
           });
-          Api.ContextMenu.forceUpdateMenus();
+          ContextMenu.forceUpdateMenus();
         },
       });
 
@@ -653,14 +652,22 @@ module.exports = (Plugin, Api) => {
         ],
       };
 
-      return Api.ContextMenu.buildMenuItem({
-        type: "submenu",
-        label: "Code of Speech",
-        children: Api.ContextMenu.buildMenuChildren([
-          codeEnablersGroup,
-          actionsGroup,
-        ]),
-      });
+      return ContextMenu.buildMenuChildren([
+        {
+          type: "group",
+          id: "code-of-speech",
+          items: [
+            {
+              type: "submenu",
+              label: "Code of Speech",
+              children: ContextMenu.buildMenuChildren([
+                codeEnablersGroup,
+                actionsGroup,
+              ]),
+            },
+          ],
+        },
+      ])[0];
     }
 
     // TODO: return true to call the origFunc, false otherwise
@@ -671,9 +678,12 @@ module.exports = (Plugin, Api) => {
       // TODO: handle null
       const currUserId = UserStore.getCurrentUser()?.id;
 
-      Logger.info(instance.props.channel);
       const codeSelectionId = this.resolveCodeSelection(
-        this.loadCodeSelection(currUserId, instance.props.channel.id, "channels"),
+        this.loadCodeSelection(
+          currUserId,
+          instance.props.channel.id,
+          "channels"
+        ),
         currUserId,
         instance.props.channel.parent_id,
         instance.props.channel.guild_id
@@ -754,22 +764,15 @@ module.exports = (Plugin, Api) => {
     patchContextMenus() {
       this.contextMenuPatches = [
         BdApi.ContextMenu.patch("user-context", (menu, props) => {
-          if (
-            props.channelSelected == null ||
-            !props.channel?.id
-          )
-            return;
+          if (props.channelSelected == null || !props.channel?.id) return;
 
-          const currUserId = UserStore.getCurrentUser()?.id;
           this.insertBeforeReactElem(
             menu,
-            (elem) =>
-              elem?.props?.id === "mute-channel" ||
-              elem?.props?.id === "unmute-channel",
-            () => [
-              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
-              Api.ContextMenu.buildMenuItem({ type: "separator" }),
-            ],
+            (elem) => {
+              const target = elem?.props?.children?.props?.id;
+              return target === "mute-channel" || target === "unmute-channel";
+            },
+            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
             5
           );
         }),
@@ -777,15 +780,14 @@ module.exports = (Plugin, Api) => {
         BdApi.ContextMenu.patch("gdm-context", (menu, props) => {
           if (!props?.channel?.id) return;
 
+          // NOTE: weird discord bug here: try moving your cursor between the change icon and mute conversation items, you should see the mute conversation item not always get selected when it should, the same thing happens to our item when we insert it here right after the change icon item
           this.insertBeforeReactElem(
             menu,
-            (elem) =>
-              elem?.props?.id === "mute-channel" ||
-              elem?.props?.id === "unmute-channel",
-            () => [
-              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
-              Api.ContextMenu.buildMenuItem({ type: "separator" }),
-            ],
+            (elem) => {
+              const target = elem?.props?.children?.props?.id;
+              return target === "mute-channel" || target === "unmute-channel";
+            },
+            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
             5
           );
         }),
@@ -808,13 +810,8 @@ module.exports = (Plugin, Api) => {
 
           this.insertBeforeReactElem(
             menu,
-            (elem) =>
-              elem?.props?.id === "mute-channel" ||
-              elem?.props?.id === "unmute-channel",
-            () => [
-              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
-              Api.ContextMenu.buildMenuItem({ type: "separator" }),
-            ],
+            (elem) => elem?.key === "notifications",
+            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
             5
           );
         }),
@@ -837,13 +834,8 @@ module.exports = (Plugin, Api) => {
 
           this.insertBeforeReactElem(
             menu,
-            (elem) =>
-              elem?.props?.id === "mute-channel" ||
-              elem?.props?.id === "unmute-channel",
-            () => [
-              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
-              Api.ContextMenu.buildMenuItem({ type: "separator" }),
-            ],
+            (elem) => elem?.key === "notifications",
+            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
             5
           );
         }),
@@ -853,13 +845,11 @@ module.exports = (Plugin, Api) => {
 
           this.insertBeforeReactElem(
             menu,
-            (elem) =>
-              elem?.props?.id === "mute-guild" ||
-              elem?.props?.id === "unmute-guild",
-            () => [
-              this.buildCodeOfSpeechMenuItem(props.guild, "guilds"),
-              Api.ContextMenu.buildMenuItem({ type: "separator" }),
-            ],
+            (elem) => {
+              const target = elem?.props?.children?.[0]?.props?.id;
+              return target === "mute-guild" || target === "unmute-guild";
+            },
+            () => this.buildCodeOfSpeechMenuItem(props.guild, "guilds"),
             5
           );
         }),
