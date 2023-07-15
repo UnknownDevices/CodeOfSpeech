@@ -242,20 +242,17 @@ module.exports = (Plugin, Api) => {
         "div",
         { className: "z-select-options" },
         this.props.options.map((opt) => {
-          if (opt.invisible) return undefined;
           return React.createElement(
             "div",
             {
               className: `z-select-option${
                 selected?.value == opt.value ? " selected" : ""
-              }`,
+              }${opt.disabled ? " disabled--8Sav3" : ""}`,
               onClick: this.onChange.bind(this, opt.value),
             },
             opt.label
-          )
-
-        }
-        )
+          );
+        })
       );
     }
 
@@ -280,7 +277,9 @@ module.exports = (Plugin, Api) => {
           React.createElement(
             "div",
             {
-              className: `z-select-value${selected.invisible ? " disabled--8Sav3" : ""}`,
+              className: `z-select-value${
+                selected.disabled ? " disabled--8Sav3" : ""
+              }`,
             },
             selected?.label ?? this.props.placeholder
           ),
@@ -297,7 +296,7 @@ module.exports = (Plugin, Api) => {
           ),
           this.state.open && this.options,
         ]
-      );
+      );;
     }
   }
 
@@ -318,14 +317,7 @@ module.exports = (Plugin, Api) => {
      * @param {string} [options.placeholder=""] - Placeholder to show when no option is selected, useful when clearable
      * @param {boolean} [options.disabled=false] - should the setting be disabled
      */
-    constructor(
-      name,
-      note,
-      defaultValue,
-      values,
-      onChange,
-      options = {}
-    ) {
+    constructor(name, note, defaultValue, values, onChange, options = {}) {
       const { clearable = false, disabled = false, placeholder = "" } = options;
       super(name, note, onChange, Select, {
         placeholder: placeholder,
@@ -382,11 +374,11 @@ module.exports = (Plugin, Api) => {
 
         if (defaultValue == null) {
           const value = {
-            label: this.resolveCodeSelectionLabel(current),
-            invisible: true,
+            label: current.option === 1 ? "None" : "● " + current.id,
+            disabled: true,
             value: { option: 2, id: this.resolveCodeSelectionId(current) },
           };
-          values.push(value);
+          values.unshift(value);
           defaultValue = value.value;
         }
 
@@ -475,14 +467,7 @@ module.exports = (Plugin, Api) => {
       return inner(elem, predicate, buildInsertions, maxDepth, 0);
     }
 
-    resolveCodeSelectionLabel(code) {
-      return code.option === 0
-        ? "Use Default"
-        : code.option === 1
-        ? "None"
-        : "● " + code.id;
-    }
-
+    // TODO: return entire code selection
     resolveCodeSelectionId(code) {
       return code.option === 0
         ? this.defaultCodeSelection.option === 2
@@ -493,22 +478,46 @@ module.exports = (Plugin, Api) => {
         : code.id;
     }
 
-    loadSelectedCode(userId, channelId) {
+    loadCodeSelection(userId, contextId, contextTy) {
       return (
-        Utilities.loadData(this.meta.name, userId, {}).channels?.[channelId]
+        Utilities.loadData(this.meta.name, userId, {})[contextTy]?.[contextId]
           ?.selectedCode ?? { option: 0 }
       );
     }
 
-    saveSelectedCode(userId, channelId, code) {
+    saveCodeSelection(userId, contextId, contextTy, code) {
       const data = Utilities.loadData(this.meta.name, userId, {});
-      if (!data.channels) data.channels = {};
-      if (!data.channels[channelId]) data.channels[channelId] = {};
-      data.channels[channelId].selectedCode = data.channels[
-        channelId
+
+      if (!data[contextTy]) data[contextTy] = {};
+      if (!data[contextTy][contextId]) data[contextTy][contextId] = {};
+      data[contextTy][contextId].selectedCode = data[contextTy][
+        contextId
       ].selectedCode = code;
 
       Utilities.saveData(this.meta.name, userId, data);
+    }
+
+    resolveCodeSelection(codeSelection, userId, parentId, guildId) {
+      let resolvedCodeSelection = codeSelection;
+      if (parentId && resolvedCodeSelection.option === 0) {
+        resolvedCodeSelection = this.loadCodeSelection(
+          userId,
+          parentId,
+          "channels"
+        );
+      }
+      if (guildId && resolvedCodeSelection.option === 0) {
+        resolvedCodeSelection = this.loadCodeSelection(
+          userId,
+          guildId,
+          "guilds"
+        );
+      }
+      if (resolvedCodeSelection.option === 0) {
+        resolvedCodeSelection = this.defaultCodeSelection;
+      }
+
+      return resolvedCodeSelection;
     }
 
     refreshCodes() {
@@ -528,33 +537,79 @@ module.exports = (Plugin, Api) => {
       );
     }
 
-    buildCodeOfSpeechMenuItem(userId, channelId) {
-      const selectedCode = this.loadSelectedCode(userId, channelId);
+    buildCodeOfSpeechMenuItem(context, contextTy) {
+      const currUserId = UserStore.getCurrentUser()?.id;
+      const codeSelection = this.loadCodeSelection(
+        currUserId,
+        context.id,
+        contextTy
+      );
+
+      let defaultCodeSelection = this.resolveCodeSelection(
+        { option: 0 },
+        currUserId,
+        context.parent_id,
+        context.guild_id
+      );
+
+      let defaultCodeSelectionlabel;
+      switch (context.parent_id ? 0 : context.guild_id ? 1 : 2) {
+        case 0: {
+          defaultCodeSelectionlabel = "Use Category Default";
+          break;
+        }
+        case 1: {
+          defaultCodeSelectionlabel = "Use Server Default";
+          break;
+        }
+        case 2: {
+          defaultCodeSelectionlabel = "Use Default";
+          break;
+        }
+        default:
+          // TODO: throw or something idk
+          break;
+      }
+
+      Logger.info(defaultCodeSelection);
 
       let codeEnablersGroup = {
         type: "group",
-        items: [
-          {
-            type: "radio",
-            label: "Use Default",
-            subtext: this.resolveCodeSelectionLabel(this.defaultCodeSelection),
-            checked: selectedCode.option === 0,
-            disabled:
-              this.defaultCodeSelection.option === 2 &&
-              !this.codes[this.defaultCodeSelection.id],
-            action: () => {
-              this.saveSelectedCode(userId, channelId, { option: 0 });
-              Api.ContextMenu.forceUpdateMenus();
-            },
-          },
-        ],
+        items: [],
       };
 
-      if (selectedCode.option === 2 && !this.codes[selectedCode.id]) {
+      codeEnablersGroup.items.push({
+        type: "radio",
+        label: defaultCodeSelectionlabel,
+        subtext:
+          defaultCodeSelection.option === 1
+            ? "None"
+            : "● " + defaultCodeSelection.id,
+        checked: codeSelection.option === 0,
+        action: () => {
+          this.saveCodeSelection(currUserId, context.id, contextTy, {
+            option: 0,
+          });
+          Api.ContextMenu.forceUpdateMenus();
+        },
+      });
+
+      if (codeSelection.option === 2 && !this.codes[codeSelection.id]) {
         codeEnablersGroup.items.push({
           type: "radio",
-          label: "● " + selectedCode.id,
+          label: "● " + codeSelection.id,
           checked: true,
+          disabled: true,
+          action: () => {},
+        });
+      } else if (
+        defaultCodeSelection.option === 2 &&
+        !this.codes[defaultCodeSelection.id]
+      ) {
+        codeEnablersGroup.items.push({
+          type: "radio",
+          label: "● " + this.defaultCodeSelection.id,
+          checked: false,
           disabled: true,
           action: () => {},
         });
@@ -564,9 +619,9 @@ module.exports = (Plugin, Api) => {
         codeEnablersGroup.items.push({
           type: "radio",
           label: "● " + codesKey,
-          checked: selectedCode.option === 2 && selectedCode.id === codesKey,
+          checked: codeSelection.option === 2 && codeSelection.id === codesKey,
           action: () => {
-            this.saveSelectedCode(userId, channelId, {
+            this.saveCodeSelection(currUserId, context.id, contextTy, {
               option: 2,
               id: codesKey,
             });
@@ -578,9 +633,11 @@ module.exports = (Plugin, Api) => {
       codeEnablersGroup.items.push({
         type: "radio",
         label: "None",
-        checked: selectedCode.option === 1,
+        checked: codeSelection.option === 1,
         action: () => {
-          this.saveSelectedCode(userId, channelId, { option: 1 });
+          this.saveCodeSelection(currUserId, context.id, contextTy, {
+            option: 1,
+          });
           Api.ContextMenu.forceUpdateMenus();
         },
       });
@@ -612,15 +669,19 @@ module.exports = (Plugin, Api) => {
       const [text, command] = args;
 
       // TODO: handle null
-      const currentUser = UserStore.getCurrentUser();
+      const currUserId = UserStore.getCurrentUser()?.id;
 
-      const selectedCodeId = this.resolveCodeSelectionId(
-        this.loadSelectedCode(currentUser?.id, instance.props.channel.id)
-      );
+      Logger.info(instance.props.channel);
+      const codeSelectionId = this.resolveCodeSelection(
+        this.loadCodeSelection(currUserId, instance.props.channel.id, "channels"),
+        currUserId,
+        instance.props.channel.parent_id,
+        instance.props.channel.guild_id
+      ).id;
 
-      if (command || selectedCodeId == null) return origFunc(...args);
+      if (command || codeSelectionId == null) return origFunc(...args);
 
-      const code = this.codes[selectedCodeId];
+      const code = this.codes[codeSelectionId];
       if (!code) {
         BdApi.UI.showNotice(
           `[Code of Speech] - The code selected for this channel is not currently loaded`,
@@ -694,22 +755,19 @@ module.exports = (Plugin, Api) => {
       this.contextMenuPatches = [
         BdApi.ContextMenu.patch("user-context", (menu, props) => {
           if (
-            props.channelSelected == null || // ignore context menus from clicking on users in channel
-            !props.channel ||
+            props.channelSelected == null ||
             !props.channel?.id
           )
             return;
 
+          const currUserId = UserStore.getCurrentUser()?.id;
           this.insertBeforeReactElem(
             menu,
             (elem) =>
               elem?.props?.id === "mute-channel" ||
               elem?.props?.id === "unmute-channel",
             () => [
-              this.buildCodeOfSpeechMenuItem(
-                UserStore.getCurrentUser()?.id,
-                props.channel.id
-              ),
+              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
               Api.ContextMenu.buildMenuItem({ type: "separator" }),
             ],
             5
@@ -725,10 +783,7 @@ module.exports = (Plugin, Api) => {
               elem?.props?.id === "mute-channel" ||
               elem?.props?.id === "unmute-channel",
             () => [
-              this.buildCodeOfSpeechMenuItem(
-                UserStore.getCurrentUser()?.id,
-                props.channel.id
-              ),
+              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
               Api.ContextMenu.buildMenuItem({ type: "separator" }),
             ],
             5
@@ -739,11 +794,14 @@ module.exports = (Plugin, Api) => {
           if (
             !props?.channel?.id ||
             !(
+              // GUILD_TEXT
               (
-                props.channel.type === 0 || // GUILD_TEXT
-                props.channel.type === 5 || // GUILD_ANNOUNCEMENT
-                props.channel.type === 10
-              ) // ANNOUNCEMENT_THREAD
+                props.channel.type === 0 ||
+                // GUILD_CATEGORY
+                props.channel.type === 4 ||
+                // GUILD_ANNOUNCEMENT
+                props.channel.type === 5
+              )
             )
           )
             return;
@@ -754,10 +812,7 @@ module.exports = (Plugin, Api) => {
               elem?.props?.id === "mute-channel" ||
               elem?.props?.id === "unmute-channel",
             () => [
-              this.buildCodeOfSpeechMenuItem(
-                DiscordModules.UserStore.getCurrentUser()?.id,
-                props.channel.id
-              ),
+              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
               Api.ContextMenu.buildMenuItem({ type: "separator" }),
             ],
             5
@@ -768,10 +823,14 @@ module.exports = (Plugin, Api) => {
           if (
             !props?.channel?.id ||
             !(
+              // ANNOUNCEMENT_THREAD
               (
-                props.channel.type === 11 || // PUBLIC_THREAD
+                props.channel.type === 10 ||
+                // PUBLIC_THREAD
+                props.channel.type === 11 ||
+                // PRIVATE_THREAD
                 props.channel.type === 12
-              ) // PRIVATE_THREAD
+              )
             )
           )
             return;
@@ -782,10 +841,23 @@ module.exports = (Plugin, Api) => {
               elem?.props?.id === "mute-channel" ||
               elem?.props?.id === "unmute-channel",
             () => [
-              this.buildCodeOfSpeechMenuItem(
-                DiscordModules.UserStore.getCurrentUser()?.id,
-                props.channel.id
-              ),
+              this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
+              Api.ContextMenu.buildMenuItem({ type: "separator" }),
+            ],
+            5
+          );
+        }),
+
+        BdApi.ContextMenu.patch("guild-context", (menu, props) => {
+          if (!props?.guild?.id) return;
+
+          this.insertBeforeReactElem(
+            menu,
+            (elem) =>
+              elem?.props?.id === "mute-guild" ||
+              elem?.props?.id === "unmute-guild",
+            () => [
+              this.buildCodeOfSpeechMenuItem(props.guild, "guilds"),
               Api.ContextMenu.buildMenuItem({ type: "separator" }),
             ],
             5
@@ -1073,6 +1145,7 @@ module.exports = (Plugin, Api) => {
 
     loadCodes(codesData) {
       this.codes = {};
+
       for (const codesDataKey in codesData) {
         if (!codesDataKey.match(this.regExprs.validCodeName)) {
           Logger.err(
