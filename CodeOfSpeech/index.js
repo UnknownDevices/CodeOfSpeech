@@ -20,7 +20,7 @@ module.exports = (Plugin, Api) => {
     WebpackModules,
   } = Api;
 
-  const { UserStore } = DiscordModules;
+  const { UserStore, React } = DiscordModules;
 
   /**
    * Setting field to extend to create new settings
@@ -154,8 +154,6 @@ module.exports = (Plugin, Api) => {
       });
     }
   }
-
-  const React = DiscordModules.React;
 
   class CloseButton extends React.Component {
     render() {
@@ -417,15 +415,15 @@ module.exports = (Plugin, Api) => {
       return new Settings.SettingPanel(null, ...elems).getElement();
     }
 
-    insertBeforeReactElem(elem, predicate, buildInsertions, maxDepth) {
-      function inner(elem, predicate, buildElems, maxDepth, currDepth) {
+    insertBeforeReactTreeElem(elem, match, buildElems, maxDepth) {
+      function inner(elem, match, buildElems, maxDepth, currDepth) {
         const children = Array.isArray(elem) ? elem : elem?.props?.children;
 
         if (!children) return false;
 
         if (Array.isArray(children)) {
           for (let i = 0; i < children.length; i++) {
-            if (predicate(children[i])) {
+            if (match(children[i])) {
               children.splice(i, 0, buildElems());
               return true;
             }
@@ -433,50 +431,27 @@ module.exports = (Plugin, Api) => {
 
           if (currDepth < maxDepth) {
             for (let child of children) {
-              if (inner(child, predicate, buildElems, maxDepth, currDepth + 1))
+              if (inner(child, match, buildElems, maxDepth, currDepth + 1))
                 return true;
             }
 
-            return inner(
-              children,
-              predicate,
-              buildElems,
-              maxDepth,
-              currDepth + 1
-            );
+            return inner(children, match, buildElems, maxDepth, currDepth + 1);
           }
         } else {
-          if (predicate(children)) {
+          if (match(children)) {
             elem.props.children = [buildElems(), elem.props.children];
             return true;
           }
 
           if (currDepth < maxDepth) {
-            return inner(
-              children,
-              predicate,
-              buildElems,
-              maxDepth,
-              currDepth + 1
-            );
+            return inner(children, match, buildElems, maxDepth, currDepth + 1);
           }
         }
 
         return false;
       }
 
-      return inner(elem, predicate, buildInsertions, maxDepth, 0);
-    }
-
-    // TODO: return entire code selection
-    resolveCodeSelectionId(code) {
-      return code.option === 0
-        ? this.defaultCodeSelection.option === 2
-          ? this.defaultCodeSelection.id
-          : undefined
-        : code.option === 1
-        ? undefined
-        : code.id;
+      return inner(elem, match, buildElems, maxDepth, 0);
     }
 
     loadCodeSelection(userId, contextId, contextTy) {
@@ -766,7 +741,7 @@ module.exports = (Plugin, Api) => {
         BdApi.ContextMenu.patch("user-context", (menu, props) => {
           if (props.channelSelected == null || !props.channel?.id) return;
 
-          this.insertBeforeReactElem(
+          this.insertBeforeReactTreeElem(
             menu,
             (elem) => {
               const target = elem?.props?.children?.props?.id;
@@ -781,7 +756,7 @@ module.exports = (Plugin, Api) => {
           if (!props?.channel?.id) return;
 
           // NOTE: weird discord bug here: try moving your cursor between the change icon and mute conversation items, you should see the mute conversation item not always get selected when it should, the same thing happens to our item when we insert it here right after the change icon item
-          this.insertBeforeReactElem(
+          this.insertBeforeReactTreeElem(
             menu,
             (elem) => {
               const target = elem?.props?.children?.props?.id;
@@ -808,7 +783,7 @@ module.exports = (Plugin, Api) => {
           )
             return;
 
-          this.insertBeforeReactElem(
+          this.insertBeforeReactTreeElem(
             menu,
             (elem) => elem?.key === "notifications",
             () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
@@ -832,7 +807,7 @@ module.exports = (Plugin, Api) => {
           )
             return;
 
-          this.insertBeforeReactElem(
+          this.insertBeforeReactTreeElem(
             menu,
             (elem) => elem?.key === "notifications",
             () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
@@ -843,7 +818,7 @@ module.exports = (Plugin, Api) => {
         BdApi.ContextMenu.patch("guild-context", (menu, props) => {
           if (!props?.guild?.id) return;
 
-          this.insertBeforeReactElem(
+          this.insertBeforeReactTreeElem(
             menu,
             (elem) => {
               const target = elem?.props?.children?.[0]?.props?.id;
@@ -1225,7 +1200,6 @@ module.exports = (Plugin, Api) => {
     // TODO: custom exclude for empty messages
     // TODO: enumerate rules
     // TODO: exclude code blocks
-    // TODO: mute channel is not found if the channel is muted
     // TODO: consider filtering out noises where relevant
     // TODO: consider an auto correct method on rules where relevant
     // TODO: look into LoadMessages
