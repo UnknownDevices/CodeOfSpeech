@@ -5,6 +5,7 @@
 
 module.exports = (Plugin, Api) => {
   const fs = require("fs");
+  const request = require("request");
 
   const {
     DiscordModules,
@@ -22,19 +23,7 @@ module.exports = (Plugin, Api) => {
 
   const { UserStore, React } = DiscordModules;
 
-  /**
-   * Setting field to extend to create new settings
-   * @memberof module:Settings
-   */
   class SettingField extends Api.Structs.Listenable {
-    /**
-     * @param {string} name - name label of the setting
-     * @param {string} note - help/note to show underneath or above the setting
-     * @param {callable} onChange - callback to perform on setting change
-     * @param {(ReactComponent|HTMLElement)} settingtype - actual setting to render
-     * @param {object} [props] - object of props to give to the setting and the settingtype
-     * @param {boolean} [props.noteOnTop=false] - determines if the note should be shown above the element or not.
-     */
     constructor(name, note, onChange, settingtype, props = {}) {
       super();
       this.name = name;
@@ -193,8 +182,6 @@ module.exports = (Plugin, Api) => {
     }
   }
 
-  // <svg class="closeIcon-11LhXr" aria-hidden="false" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"></path></svg>
-
   class Select extends React.Component {
     constructor(props) {
       super(props);
@@ -299,23 +286,7 @@ module.exports = (Plugin, Api) => {
     }
   }
 
-  /**
-   * Creates a dropdown using discord's built in dropdown.
-   * @memberof module:Settings
-   * @extends module:Settings.SettingField
-   */
   class Dropdown extends SettingField {
-    /**
-     * @param {string} name - name label of the setting
-     * @param {string} note - help/note to show underneath or above the setting
-     * @param {*} defaultValue - currently selected value
-     * @param {Array<module:Settings~DropdownItem>} values - array of all options available
-     * @param {callable} onChange - callback to perform on setting change, callback item value
-     * @param {object} [options] - object of options to give to the setting
-     * @param {boolean} [options.clearable=false] - should be able to empty the field value
-     * @param {string} [options.placeholder=""] - Placeholder to show when no option is selected, useful when clearable
-     * @param {boolean} [options.disabled=false] - should the setting be disabled
-     */
     constructor(name, note, defaultValue, values, onChange, options = {}) {
       const { clearable = false, disabled = false, placeholder = "" } = options;
       super(name, note, onChange, Select, {
@@ -412,7 +383,10 @@ module.exports = (Plugin, Api) => {
         );
       }
 
-      return new Settings.SettingPanel(null, ...elems).getElement();
+      return new Settings.SettingPanel(
+        null,
+        ...elems,
+      ).getElement();
     }
 
     insertBeforeReactTreeElem(elem, match, buildElems, maxDepth) {
@@ -651,15 +625,15 @@ module.exports = (Plugin, Api) => {
       const [text, command] = args;
 
       // TODO: handle null
-      const currUserId = UserStore.getCurrentUser()?.id;
+      const currUser = UserStore.getCurrentUser();
 
       const codeSelectionId = this.resolveCodeSelection(
         this.loadCodeSelection(
-          currUserId,
+          currUser?.id,
           instance.props.channel.id,
           "channels"
         ),
-        currUserId,
+        currUser?.id,
         instance.props.channel.parent_id,
         instance.props.channel.guild_id
       ).id;
@@ -679,7 +653,7 @@ module.exports = (Plugin, Api) => {
       let abortSubmit = false;
       for (const rulesKey in code.rules) {
         const rule = code.rules[rulesKey];
-        if (!rule.apply(text)) {
+        if (!rule(text)) {
           abortSubmit = true;
           const message = Utilities.formatTString(this.codeViolationMsg, {
             rule: rulesKey,
@@ -891,56 +865,90 @@ module.exports = (Plugin, Api) => {
         pattern: ({
           patterns,
           negate = false,
-          regex = false,
-          caseInsensitive = false,
-          multiline = false,
-          unicode = false,
-          excludeUrls = false,
-          excludeEmojis = false,
+          regex = {},
+          ignore = {},
         }) => {
+          regex = Object.assign({
+            escapeSpecialCharacters: false,
+            caseInsensitive: false,
+            multiline: false,
+            unicode: false,
+          });
+          ignore = Object.assign({
+            textUnderWordCount: 0,
+            emojis: false,
+            urls: false,
+            codeBlocks: false,
+            italics: false,
+          }, ignore);
+
           if (!Array.isArray(patterns) || patterns.length <= 0)
-            return "'patterns' must be a non-empty array";
-          if (typeof negate !== "boolean") return "'negate' must be a boolean";
-          if (typeof regex !== "boolean") return "'regex' must be a boolean";
-          if (typeof caseInsensitive !== "boolean")
-            return "'caseInsensitive' must be a boolean";
-          if (typeof multiline !== "boolean")
-            return "'multiline' must be a boolean";
-          if (typeof unicode !== "boolean")
-            return "'unicode' must be a boolean";
-          if (typeof excludeUrls !== "boolean")
-            return "'excludeUrls' must be a boolean";
-          if (typeof excludeEmojis !== "boolean")
-            return "'excludeEmojis' must be a boolean";
+            return { error: "'patterns' must be a non-empty array" };
+          if (typeof negate !== "boolean")
+            return { error: "'negate' must be a boolean" };
 
-          let excludeRegStrs = [];
-          if (excludeUrls) excludeRegStrs.push(this.regStrs.url);
-          if (excludeEmojis)
-            excludeRegStrs.push(
+          if (typeof regex !== "object")
+            return { error: "'regex' must be an object" };
+          if (typeof regex.escapeSpecialCharacters !== "boolean")
+            return {
+              error: "'regex.escapeSpecialCharacters' must be a boolean",
+            };
+          if (typeof regex.caseInsensitive !== "boolean")
+            return { error: "'regex.caseInsensitive' must be a boolean" };
+          if (typeof regex.multiline !== "boolean")
+            return { error: "'regex.multiline' must be a boolean" };
+          if (typeof regex.unicode !== "boolean")
+            return { error: "'regex.unicode' must be a boolean" };
+
+          if (typeof ignore !== "object")
+            return { error: "'ignore' must be an object" };
+          if (typeof ignore.textUnderWordCount !== "number")
+            return { error: "'ignore.textUnderWordCount' must be a number" };
+          if (typeof ignore.emojis !== "boolean")
+            return { error: "'ignore.emojis' must be a boolean" };
+          if (typeof ignore.urls !== "boolean")
+            return { error: "'ignore.urls' must be a boolean" };
+          if (typeof ignore.codeBlocks !== "boolean")
+            return { error: "'ignore.codeBlocks' must be a boolean" };
+          if (typeof ignore.italics !== "boolean")
+            return { error: "'ignores.italics' must be a boolean" };
+
+          let ignoreRegStrs = [];
+          if (ignore.emojis)
+            ignoreRegStrs.push(
               this.regStrs.unicodeEmoji,
-              this.regStrs.emojiId
+              this.regStrs.customEmoji
             );
+          if (ignore.urls) ignoreRegStrs.push(this.regStrs.url);
+          if (ignore.codeBlocks) ignoreRegStrs.push(this.regStrs.codeBlocks);
+          if (ignore.italics) ignoreRegStrs.push(this.regStrs.italics);
 
-          const excludeRegExpr = new RegExp(
-            this.combineRegStrs(excludeRegStrs),
+          const ignoresRegExpr = new RegExp(
+            this.combineRegStrs(ignoreRegStrs),
             "gu"
           );
 
-          if (!regex)
+          if (regex.escapeSpecialCharacters)
             patterns = patterns.map(this.escapeRegSpecialChars.bind(this));
 
-          const matchRegExpr = new RegExp(
+          const matchesRegExpr = new RegExp(
             this.combineRegStrs(patterns),
             "g" +
-              (caseInsensitive ? "i" : "") +
-              (multiline ? "m" : "") +
-              (unicode ? "u" : "")
+              ((regex.caseInsensitive ? "i" : "") +
+                (regex.multiline ? "m" : "") +
+                (regex.unicode ? "u" : ""))
           );
 
           return {
-            apply: (text) => {
-              text = text.replace(excludeRegExpr, "");
-              return (text.match(matchRegExpr) == null) ^ !negate;
+            success: (text) => {
+              if (
+                0 < ignore.textUnderWordCount &&
+                text.match(this.regExprs.words) < ignore.textUnderWordCount
+              )
+                return true;
+
+              text = text.replace(ignoresRegExpr, "");
+              return (text.match(matchesRegExpr) == null) ^ !negate;
             },
           };
         },
@@ -948,99 +956,189 @@ module.exports = (Plugin, Api) => {
         word: ({
           words,
           negate = false,
-          regex = false,
-          caseInsensitive = true,
-          multiline = false,
-          unicode = false,
+          regex = {},
+          ignore = {},
         }) => {
-          if (!Array.isArray(words) && words.length <= 0)
-            return "'words' must be a non-empty array";
-          if (typeof negate !== "boolean") return "'negate' must be a boolean";
-          if (typeof regex !== "boolean") return "'regex' must be a boolean";
-          if (typeof caseInsensitive !== "boolean")
-            return "'caseInsensitive' must be a boolean";
-          if (typeof multiline !== "boolean")
-            return "'multiline' must be a boolean";
-          if (typeof unicode !== "boolean")
-            return "'unicode' must be a boolean";
+          regex = Object.assign({
+            escapeSpecialCharacters: true,
+            caseInsensitive: true,
+            multiline: false,
+            unicode: false,
+          }, regex);
+          ignore = Object.assign({
+            textUnderWordCount: 0,
+            emojis: true,
+            urls: true,
+            codeBlocks: false,
+            italics: false,
+          }, ignore);
 
-          const excludeRegExpr = new RegExp(
-            this.combineRegStrs([
-              this.regStrs.url,
+          // TODO: assert that every item in words is a non-empty string
+          if (!Array.isArray(words) || words.length <= 0)
+            return { error: "'words' must be a non-empty array" };
+          if (typeof negate !== "boolean")
+            return { error: "'negate' must be a boolean" };
+
+          if (typeof regex !== "object")
+            return { error: "'regex' must be an object" };
+          if (typeof regex.escapeSpecialCharacters !== "boolean")
+            return {
+              error: "'regex.escapeSpecialCharacters' must be a boolean",
+            };
+          if (typeof regex.caseInsensitive !== "boolean")
+            return { error: "'regex.caseInsensitive' must be a boolean" };
+          if (typeof regex.multiline !== "boolean")
+            return { error: "'regex.multiline' must be a boolean" };
+          if (typeof regex.unicode !== "boolean")
+            return { error: "'regex.unicode' must be a boolean" };
+
+          if (typeof ignore !== "object")
+            return { error: "'ignore' must be an object" };
+          if (typeof ignore.textUnderWordCount !== "number")
+            return { error: "'ignore.textUnderWordCount' must be a number" };
+          if (typeof ignore.emojis !== "boolean")
+            return { error: "'ignore.emojis' must be a boolean" };
+          if (typeof ignore.urls !== "boolean")
+            return { error: "'ignore.urls' must be a boolean" };
+          if (typeof ignore.codeBlocks !== "boolean")
+            return { error: "'ignore.codeBlocks' must be a boolean" };
+          if (typeof ignore.italics !== "boolean")
+            return { error: "'ignores.italics' must be a boolean" };
+
+          let ignoreRegStrs = [];
+          if (ignore.emojis)
+            ignoreRegStrs.push(
               this.regStrs.unicodeEmoji,
-              this.regStrs.emojiId,
-            ]),
+              this.regStrs.customEmoji
+            );
+          if (ignore.urls) ignoreRegStrs.push(this.regStrs.url);
+          if (ignore.codeBlocks) ignoreRegStrs.push(this.regStrs.codeBlocks);
+          if (ignore.italics) ignoreRegStrs.push(this.regStrs.italics);
+
+          const ignoresRegExpr = new RegExp(
+            this.combineRegStrs(ignoreRegStrs),
             "gu"
           );
 
-          if (!regex) words = words.map(this.escapeRegSpecialChars.bind(this));
+          Logger.info(ignoresRegExpr);
 
-          const matchRegExpr = new RegExp(
+          if (regex.escapeSpecialCharacters)
+            words = words.map(this.escapeRegSpecialChars.bind(this));
+
+          const matchesRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
             "g" +
-              (caseInsensitive ? "i" : "") +
-              (multiline ? "m" : "") +
-              (unicode ? "u" : "")
+              ((regex.caseInsensitive ? "i" : "") +
+                (regex.multiline ? "m" : "") +
+                (regex.unicode ? "u" : ""))
           );
 
           return {
-            apply: (text) => {
-              text = text.replace(excludeRegExpr, "");
-              return (text.match(matchRegExpr) == null) ^ !negate;
+            success: (text) => {
+              if (
+                0 < ignore.textUnderWordCount &&
+                text.match(this.regExprs.words) < ignore.textUnderWordCount
+              )
+                return true;
+
+              text = text.replace(ignoresRegExpr, "");
+              return (text.match(matchesRegExpr) == null) ^ !negate;
             },
           };
         },
 
         wordFrequency: ({
           words,
-          every,
+          frequency,
           negate = false,
-          excludeTextsUnder = 1,
-          regex = false,
-          caseInsensitive = true,
-          multiline = false,
-          unicode = false,
+          regex = {},
+          ignore = {},
         }) => {
-          // TODO: assert type with function somehow
-          if (!Array.isArray(words)) return "'words' must be a non-empty array";
-          if (every == 0) return "'every' must be a non-zero number";
-          if (typeof negate !== "boolean") return "'negate' must be a boolean";
-          if (typeof excludeTextsUnder !== "number")
-            return "'excludeTextsUnder' must be a number";
-          if (typeof regex !== "boolean") return "'regex' must be a boolean";
-          if (typeof caseInsensitive !== "boolean")
-            return "'caseInsensitive' must be a boolean";
+          regex = Object.assign({
+            escapeSpecialCharacters: true,
+            caseInsensitive: true,
+            multiline: false,
+            unicode: false,
+          }, regex);
+          ignore = Object.assign({
+            textUnderWordCount: 0,
+            emojis: true,
+            urls: true,
+            codeBlocks: false,
+            italics: false,
+          }, ignore);
 
-          const excludeRegExpr = new RegExp(
-            this.combineRegStrs([
-              this.regStrs.url,
+          if (!Array.isArray(words) || words.length <= 0)
+            return { error: "'words' must be a non-empty array" };
+          if (typeof frequency !== "number")
+            return { error: "'frequency' must be a number" };
+          if (typeof negate !== "boolean")
+            return { error: "'negate' must be a boolean" };
+
+          if (typeof regex !== "object")
+            return { error: "'regex' must be an object" };
+          if (typeof regex.escapeSpecialCharacters !== "boolean")
+            return {
+              error: "'regex.escapeSpecialCharacters' must be a boolean",
+            };
+          if (typeof regex.caseInsensitive !== "boolean")
+            return { error: "'regex.caseInsensitive' must be a boolean" };
+          if (typeof regex.multiline !== "boolean")
+            return { error: "'regex.multiline' must be a boolean" };
+          if (typeof regex.unicode !== "boolean")
+            return { error: "'regex.unicode' must be a boolean" };
+
+          if (typeof ignore !== "object")
+            return { error: "'ignore' must be an object" };
+          if (typeof ignore.textUnderWordCount !== "number")
+            return { error: "'ignore.textUnderWordCount' must be a number" };
+          if (typeof ignore.emojis !== "boolean")
+            return { error: "'ignore.emojis' must be a boolean" };
+          if (typeof ignore.urls !== "boolean")
+            return { error: "'ignore.urls' must be a boolean" };
+          if (typeof ignore.codeBlocks !== "boolean")
+            return { error: "'ignore.codeBlocks' must be a boolean" };
+          if (typeof ignore.italics !== "boolean")
+            return { error: "'ignores.italics' must be a boolean" };
+
+          let ignoreRegStrs = [];
+          if (ignore.emojis)
+            ignoreRegStrs.push(
               this.regStrs.unicodeEmoji,
-              this.regStrs.emojiId,
-            ]),
+              this.regStrs.customEmoji
+            );
+          if (ignore.urls) ignoreRegStrs.push(this.regStrs.url);
+          if (ignore.codeBlocks) ignoreRegStrs.push(this.regStrs.codeBlocks);
+          if (ignore.italics) ignoreRegStrs.push(this.regStrs.italics);
+
+          const ignoresRegExpr = new RegExp(
+            this.combineRegStrs(ignoreRegStrs),
             "gu"
           );
 
-          if (!regex) words = words.map(this.escapeRegSpecialChars.bind(this));
+          if (regex.escapeSpecialCharacters)
+            words = words.map(this.escapeRegSpecialChars.bind(this));
 
-          const matchRegExpr = new RegExp(
+          const matchesRegExpr = new RegExp(
             `(?<!\\w'?)(${this.combineRegStrs(words)})(?!\\w)`,
             "g" +
-              (caseInsensitive ? "i" : "") +
-              (multiline ? "m" : "") +
-              (unicode ? "u" : "")
+              ((regex.caseInsensitive ? "i" : "") +
+                (regex.multiline ? "m" : "") +
+                (regex.unicode ? "u" : ""))
           );
 
           return {
-            apply: (text) => {
-              text = text.replace(excludeRegExpr, "");
-              const matches = text.match(matchRegExpr) || [];
-              const remainingWords =
-                text.replace(matchRegExpr, "")?.match(this.regExprs.word) || [];
+            success: (text) => {
+              text = text.replace(ignoresRegExpr, "");
+              const matches = text.match(matchesRegExpr) || [];
+              const nonMatches =
+                text.replace(matchesRegExpr, "")?.match(this.regExprs.words) ||
+                [];
 
-              const requiredMatches = Math.ceil(remainingWords.length / every);
+              const requiredMatches = Math.ceil(nonMatches.length / frequency);
 
               return (
-                (excludeTextsUnder <= remainingWords.length &&
+                (ignore.textUnderWordCount <= nonMatches.length &&
                   matches.length < requiredMatches) ^ !negate
               );
             },
@@ -1051,20 +1149,40 @@ module.exports = (Plugin, Api) => {
           min = -1,
           max = Number.MAX_VALUE,
           negate = false,
+          ignore = {},
         }) => {
-          if (typeof min !== "number") return "'min' must be a number";
-          if (typeof max !== "number") return "'max' must be a number";
-          if (typeof negate !== "boolean") return "'negate' must be a boolean";
+          ignore = Object.assign({
+            codeBlocks: false,
+            italics: false,
+          }, ignore);
 
-          const excludeRegExpr = new RegExp(
-            this.combineRegStrs([this.regStrs.url, this.regStrs.emojiId]),
+          if (typeof min !== "number")
+            return { error: "'min' must be a number" };
+          if (typeof max !== "number")
+            return { error: "'max' must be a number" };
+          if (typeof negate !== "boolean")
+            return { error: "'negate' must be a boolean" };
+
+          if (typeof ignore !== "object")
+            return { error: "'ignore' must be an object" };
+          if (typeof ignore.codeBlocks !== "boolean")
+            return { error: "'ignore.codeBlocks' must be a boolean" };
+          if (typeof ignore.italics !== "boolean")
+            return { error: "'ignores.italics' must be a boolean" };
+
+          let ignoreRegStrs = [this.regStrs.customEmoji, this.regStrs.url];
+          if (ignore.codeBlocks) ignoreRegStrs.push(this.regStrs.codeBlocks);
+          if (ignore.italics) ignoreRegStrs.push(this.regStrs.italics);
+
+          const ignoresRegExpr = new RegExp(
+            this.combineRegStrs(ignoreRegStrs),
             "gu"
           );
 
           return {
-            apply: (text) => {
-              text = text.replace(excludeRegExpr, "");
-              const words = text.match(this.regExprs.word) || [];
+            success: (text) => {
+              text = text.replace(ignoresRegExpr, "");
+              const words = text.match(this.regExprs.words) || [];
 
               // TODO: always count the syllables of all words
 
@@ -1073,8 +1191,8 @@ module.exports = (Plugin, Api) => {
                 word = word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/, "");
                 word = word.replace(/^y/, "");
 
-                const syllablesCount = word.match(/[aeiouy]{1,2}/g)?.length;
-                if ((syllablesCount <= min || max < syllablesCount) ^ negate) {
+                const syllableCount = word.match(/[aeiouy]{1,2}/g)?.length;
+                if ((syllableCount <= min || max < syllableCount) ^ negate) {
                   return false;
                 }
               }
@@ -1084,24 +1202,59 @@ module.exports = (Plugin, Api) => {
           };
         },
 
-        capitalizedWord: ({ negate = false, excludeFullCaps = false }) => {
-          if (typeof negate !== "boolean") return "'negate' must be a boolean";
-          if (typeof excludeFullCaps !== "boolean")
-            return "'excludeFullCaps' must be a boolean";
+        capitalization: ({
+          negate = false,
+          ignore = {
+            textUnderWordCount: 0,
+            fullCaps: false,
+            codeBlocks: false,
+            italics: false,
+          },
+        }) => {
+          ignore = Object.assign({
+            textUnderWordCount: 0,
+            fullCaps: false,
+            codeBlocks: false,
+            italics: false,
+          }, ignore);
 
-          const excludeRegExpr = new RegExp(
-            this.combineRegStrs([this.regStrs.url, this.regStrs.emojiId]),
+          if (typeof negate !== "boolean")
+            return { error: "'negate' must be a boolean" };
+
+          if (typeof ignore !== "object")
+            return { error: "'ignore' must be an object" };
+          if (typeof ignore.textUnderWordCount !== "number")
+            return { error: "'ignore.textUnderWordCount' must be a number" };
+          if (typeof ignore.fullCaps !== "boolean")
+            return { error: "'ignore.fullCaps' must be a boolean" };
+          if (typeof ignore.codeBlocks !== "boolean")
+            return { error: "'ignore.codeBlocks' must be a boolean" };
+          if (typeof ignore.italics !== "boolean")
+            return { error: "'ignores.italics' must be a boolean" };
+
+          let ignoreRegStrs = [this.regStrs.customEmoji, this.regStrs.url];
+          if (ignore.codeBlocks) ignoreRegStrs.push(this.regStrs.codeBlocks);
+          if (ignore.italics) ignoreRegStrs.push(this.regStrs.italics);
+
+          const ignoresRegExpr = new RegExp(
+            this.combineRegStrs(ignoreRegStrs),
             "gu"
           );
 
-          const matchRegExpr = excludeFullCaps
-            ? this.regExprs.notFullCapsCapitalizedWord
-            : this.regExprs.capitalizedWord;
+          const matchesRegExpr = ignore.fullCaps
+            ? this.regExprs.notFullCapsCapitalizedWords
+            : this.regExprs.capitalizedWords;
 
           return {
-            apply: (text) => {
-              text = text.replace(excludeRegExpr, "");
-              return (text.match(matchRegExpr) == null) ^ !negate;
+            success: (text) => {
+              if (
+                0 < ignore.textUnderWordCount &&
+                text.match(this.regExprs.words) < ignore.textUnderWordCount
+              )
+                return true;
+
+              text = text.replace(ignoresRegExpr, "");
+              return (text.match(matchesRegExpr) == null) ^ !negate;
             },
           };
         },
@@ -1162,15 +1315,15 @@ module.exports = (Plugin, Api) => {
             continue;
           }
 
-          const rule = this.ruleTypes[ruleData.type](ruleData);
-          if (typeof rule === "string") {
+          let res = this.ruleTypes[ruleData.type](ruleData);
+          if (res.error) {
             Logger.err(
-              `While loading '${rulesDataKey}' rule of '${codesDataKey}' code: ${rule}`
+              `While loading '${rulesDataKey}' rule of '${codesDataKey}' code: ${res.error}`
             );
             continue;
           }
 
-          this.codes[codesDataKey].rules[rulesDataKey] = rule;
+          this.codes[codesDataKey].rules[rulesDataKey] = res.success;
         }
       }
 
@@ -1179,17 +1332,20 @@ module.exports = (Plugin, Api) => {
 
     loadReg() {
       this.regStrs = {
-        url: "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*)",
         unicodeEmoji:
           "(\\p{Extended_Pictographic}\\u{200D})*\\p{Extended_Pictographic}\\u{FE0F}?",
-        emojiId: "<a?:[\\w~]{2,}:\\d{18}>",
+        customEmoji: "<a?:[\\w~]{2,}:\\d{18}>",
+        url: "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*)",
+        codeBlocks: "(`[^`\\n\\r]+?`(?!`))|(``[^`\\n\\r]+?``(?!`))|(```(.|\\n|\\r)*?```)",
+        italics:
+          "(?<!(?<!\\\\)\\\\(\\\\\\\\)*|\\*)\\*(\\*\\*)*(?!\\*).+?(?<!(?<!\\\\)\\\\(\\\\\\\\)*|\\*)\\*(\\*\\*)*(?!\\*)",
       };
 
       this.regExprs = {
-        notFullCapsCapitalizedWord:
+        notFullCapsCapitalizedWords:
           /(?<!\w'?)[A-Z](?!'?[A-Z\d_]+(\W|$))(\w)*('\w+)?/g,
-        capitalizedWord: /(?<!\w'?)[A-Z]\w*('\w+)?/g,
-        word: /(?<!\w'?)\w+('\w+)?/g,
+        capitalizedWords: /(?<!\w'?)[A-Z]\w*('\w+)?/g,
+        words: /(?<!\w'?)\w+('\w+)?/g,
         regSpecialChars: /[.*+?^${}()|[\]\\]/g,
         validCodeName: /^(?! )[\w-' ]{0,20}(?<! )$/,
         validRuleName: /^(?! )[\w-' ]{0,40}(?<! )$/,
@@ -1209,6 +1365,19 @@ module.exports = (Plugin, Api) => {
     // TODO: display notice when a rule or code fails to load
 
     onStart() {
+      DOMTools.addStyle(
+        this.meta.name,
+        `
+        .bd-settings-container.cos-bd-settings-container {
+          padding-left: 15px;
+        }
+        .bd-settings-title.bd-settings-group-title.cos-bd-settings-group-title {
+          margin-bottom: 2px;
+          margin-top: 0px;
+        }
+        `
+      );
+
       this.loadReg();
       this.loadSettings();
       this.loadRuleTypes();
@@ -1225,6 +1394,7 @@ module.exports = (Plugin, Api) => {
     }
 
     onStop() {
+      DOMTools.removeStyle(this.meta.name);
       Patcher.unpatchAll();
       this.unpatchContextMenus();
     }
