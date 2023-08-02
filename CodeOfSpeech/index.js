@@ -21,8 +21,9 @@ module.exports = (Plugin, Api) => {
     WebpackModules,
   } = Api;
 
-  const { UserStore, React } = DiscordModules;
-
+  const { Dispatcher, SelectedChannelStore, MessageStore, UserStore, React } =
+    DiscordModules;
+    
   class SettingField extends Api.Structs.Listenable {
     constructor(name, note, onChange, settingtype, props = {}) {
       super();
@@ -315,7 +316,7 @@ module.exports = (Plugin, Api) => {
         this,
         Utilities.loadSettings(this.meta.name, {
           defaultCodeSelection: { option: 1 },
-          codeViolationMsg: "Code Violation - ${rule}",
+          codeViolationMsg: "[Code of Speech] - ${rule}",
         })
       );
     }
@@ -428,40 +429,82 @@ module.exports = (Plugin, Api) => {
       return inner(elem, match, buildElems, maxDepth, 0);
     }
 
-    loadCodeSelection(userId, contextId, contextTy) {
-      return (
-        Utilities.loadData(this.meta.name, userId, {})[contextTy]?.[contextId]
-          ?.selectedCode ?? { option: 0 }
-      );
+    loadData(path, defaultValue) {
+      let [key, ...segments] = path.split(".");
+      const data = Utilities.loadData(this.meta.name, key, {});
+
+      if (!segments.length) return data ?? defaultValue;
+
+      let head = data,
+        i = 0;
+      for (; i < segments.length - 1; i++) {
+        if (head[segments[i]] === undefined) head[segments[i]] = {};
+        head = head[segments[i]];
+      }
+
+      if (head[segments[i]] === undefined) head[segments[i]] = defaultValue;
+      return { data, value: head[segments[i]] }; // return data and value
     }
 
-    saveCodeSelection(userId, contextId, contextTy, code) {
-      const data = Utilities.loadData(this.meta.name, userId, {});
+    saveData(path, value) {
+      let [key, ...segments] = path.split(".");
 
-      if (!data[contextTy]) data[contextTy] = {};
-      if (!data[contextTy][contextId]) data[contextTy][contextId] = {};
-      data[contextTy][contextId].selectedCode = data[contextTy][
-        contextId
-      ].selectedCode = code;
+      if (!segments.length) {
+        Utilities.saveData(this.meta.name, key, value);
+        return;
+      }
 
-      Utilities.saveData(this.meta.name, userId, data);
+      const data = Utilities.loadData(this.meta.name, key, {});
+
+      let head = data,
+        i = 0;
+      for (; i < segments.length - 1; i++) {
+        if (head[segments[i]] == null) head[segments[i]] = {};
+        head = head[segments[i]];
+      }
+
+      head[segments[i]] = value;
+      Utilities.saveData(this.meta.name, key, data);
+    }
+
+    mapData(path, map) {
+      let [key, ...segments] = path.split(".");
+
+      if (!segments.length) {
+        Utilities.saveData(
+          this.meta.name,
+          key,
+          map(Utilities.loadData(this.meta.name, key, {}))
+        );
+        return;
+      }
+
+      const data = Utilities.loadData(this.meta.name, key, {});
+
+      let head = data,
+        i = 0;
+      for (; i < segments.length - 1; i++) {
+        if (head[segments[i]] == null) head[segments[i]] = {};
+        head = head[segments[i]];
+      }
+
+      head[segments[i]] = map(head[segments[i]]);
+      Utilities.saveData(this.meta.name, key, data);
     }
 
     resolveCodeSelection(codeSelection, userId, parentId, guildId) {
       let resolvedCodeSelection = codeSelection;
       if (parentId && resolvedCodeSelection.option === 0) {
-        resolvedCodeSelection = this.loadCodeSelection(
-          userId,
-          parentId,
-          "channels"
-        );
+        resolvedCodeSelection = this.loadData(
+          `${userId}.channels.${parentId}.selectedCode`,
+          { option: 0 }
+        ).value;
       }
       if (guildId && resolvedCodeSelection.option === 0) {
-        resolvedCodeSelection = this.loadCodeSelection(
-          userId,
-          guildId,
-          "guilds"
-        );
+        resolvedCodeSelection = this.loadData(
+          `${userId}.guilds.${guildId}.selectedCode`,
+          { option: 0 }
+        ).value;
       }
       if (resolvedCodeSelection.option === 0) {
         resolvedCodeSelection = this.defaultCodeSelection;
@@ -487,23 +530,27 @@ module.exports = (Plugin, Api) => {
       );
     }
 
-    buildCodeOfSpeechMenuItem(context, contextTy) {
+    buildCodeOfSpeechMenuItem(channelOrGuild, isGuildContextMenu) {
       const currUserId = UserStore.getCurrentUser()?.id;
-      const codeSelection = this.loadCodeSelection(
-        currUserId,
-        context.id,
-        contextTy
-      );
+      const channelData = this.loadData(
+        `${currUserId}.${isGuildContextMenu ? "guilds" : "channels"}.${
+          channelOrGuild.id
+        }`,
+        {}
+      ).value;
+      channelData.selectedCode = channelData.selectedCode ?? { option: 0 };
+      channelData.scanForTriggers =
+        channelData.scanForTriggers ?? false;
 
       let defaultCodeSelection = this.resolveCodeSelection(
         { option: 0 },
         currUserId,
-        context.parent_id,
-        context.guild_id
+        channelOrGuild.parent_id,
+        channelOrGuild.guild_id
       );
 
       let defaultCodeSelectionlabel;
-      switch (context.parent_id ? 0 : context.guild_id ? 1 : 2) {
+      switch (channelOrGuild.parent_id ? 0 : channelOrGuild.guild_id ? 1 : 2) {
         case 0: {
           defaultCodeSelectionlabel = "Use Category Default";
           break;
@@ -533,19 +580,22 @@ module.exports = (Plugin, Api) => {
           defaultCodeSelection.option === 1
             ? "None"
             : "● " + defaultCodeSelection.id,
-        checked: codeSelection.option === 0,
+        checked: channelData.selectedCode.option === 0,
         action: () => {
-          this.saveCodeSelection(currUserId, context.id, contextTy, {
-            option: 0,
-          });
+          this.saveData(
+            `${currUserId}.${isGuildContextMenu ? "guilds" : "channels"}.${
+              channelOrGuild.id
+            }.selectedCode`,
+            { option: 0 }
+          );
           ContextMenu.forceUpdateMenus();
         },
       });
 
-      if (codeSelection.option === 2 && !this.codes[codeSelection.id]) {
+      if (channelData.selectedCode.option === 2 && !this.codes[channelData.selectedCode.id]) {
         codeEnablersGroup.items.push({
           type: "radio",
-          label: "● " + codeSelection.id,
+          label: "● " + channelData.selectedCode.id,
           checked: true,
           disabled: true,
           action: () => {},
@@ -567,12 +617,19 @@ module.exports = (Plugin, Api) => {
         codeEnablersGroup.items.push({
           type: "radio",
           label: "● " + codesKey,
-          checked: codeSelection.option === 2 && codeSelection.id === codesKey,
+          checked:
+            channelData.selectedCode.option === 2 &&
+            channelData.selectedCode.id === codesKey,
           action: () => {
-            this.saveCodeSelection(currUserId, context.id, contextTy, {
-              option: 2,
-              id: codesKey,
-            });
+            this.saveData(
+              `${currUserId}.${isGuildContextMenu ? "guilds" : "channels"}.${
+                channelOrGuild.id
+              }.selectedCode`,
+              {
+                option: 2,
+                id: codesKey,
+              }
+            );
             ContextMenu.forceUpdateMenus();
           },
         });
@@ -581,14 +638,39 @@ module.exports = (Plugin, Api) => {
       codeEnablersGroup.items.push({
         type: "radio",
         label: "None",
-        checked: codeSelection.option === 1,
+        checked: channelData.selectedCode.option === 1,
         action: () => {
-          this.saveCodeSelection(currUserId, context.id, contextTy, {
-            option: 1,
-          });
+          this.saveData(
+            `${currUserId}.${isGuildContextMenu ? "guilds" : "channels"}.${
+              channelOrGuild.id
+            }.selectedCode`,
+            {
+              option: 1,
+            }
+          );
           ContextMenu.forceUpdateMenus();
         },
       });
+
+      const optionsGroup = {
+        type: "group",
+        items: [
+          {
+            type: "toggle",
+            label: "Scan For Triggers",
+            checked: channelData.scanForTriggers,
+            action: () => {
+              this.mapData(
+                `${currUserId}.${isGuildContextMenu ? "guilds" : "channels"}.${
+                  channelOrGuild.id
+                }.scanForTriggers`,
+                (scanForTriggers) => !scanForTriggers
+              );
+              ContextMenu.forceUpdateMenus();
+            },
+          }
+        ],
+      };
 
       const actionsGroup = {
         type: "group",
@@ -611,6 +693,7 @@ module.exports = (Plugin, Api) => {
               label: "Code of Speech",
               children: ContextMenu.buildMenuChildren([
                 codeEnablersGroup,
+                optionsGroup,
                 actionsGroup,
               ]),
             },
@@ -628,11 +711,10 @@ module.exports = (Plugin, Api) => {
       const currUser = UserStore.getCurrentUser();
 
       const codeSelectionId = this.resolveCodeSelection(
-        this.loadCodeSelection(
-          currUser?.id,
-          instance.props.channel.id,
-          "channels"
-        ),
+        this.loadData(
+          `${currUser?.id}.channels.${instance.props.channel.id}.selectedCode`,
+          { option: 0 }
+        ).value,
         currUser?.id,
         instance.props.channel.parent_id,
         instance.props.channel.guild_id
@@ -721,7 +803,7 @@ module.exports = (Plugin, Api) => {
               const target = elem?.props?.children?.props?.id;
               return target === "mute-channel" || target === "unmute-channel";
             },
-            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
+            () => this.buildCodeOfSpeechMenuItem(props.channel, false),
             5
           );
         }),
@@ -736,7 +818,7 @@ module.exports = (Plugin, Api) => {
               const target = elem?.props?.children?.props?.id;
               return target === "mute-channel" || target === "unmute-channel";
             },
-            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
+            () => this.buildCodeOfSpeechMenuItem(props.channel, false),
             5
           );
         }),
@@ -760,7 +842,7 @@ module.exports = (Plugin, Api) => {
           this.insertBeforeReactTreeElem(
             menu,
             (elem) => elem?.key === "notifications",
-            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
+            () => this.buildCodeOfSpeechMenuItem(props.channel, false),
             5
           );
         }),
@@ -784,7 +866,7 @@ module.exports = (Plugin, Api) => {
           this.insertBeforeReactTreeElem(
             menu,
             (elem) => elem?.key === "notifications",
-            () => this.buildCodeOfSpeechMenuItem(props.channel, "channels"),
+            () => this.buildCodeOfSpeechMenuItem(props.channel, false),
             5
           );
         }),
@@ -798,7 +880,7 @@ module.exports = (Plugin, Api) => {
               const target = elem?.props?.children?.[0]?.props?.id;
               return target === "mute-guild" || target === "unmute-guild";
             },
-            () => this.buildCodeOfSpeechMenuItem(props.guild, "guilds"),
+            () => this.buildCodeOfSpeechMenuItem(props.guild, true),
             5
           );
         }),
@@ -817,12 +899,13 @@ module.exports = (Plugin, Api) => {
         const node = e.addedNodes[0];
         if (node.matches(DiscordSelectors.Textarea.textArea)) {
           this.patchTextArea(node);
-        } else {
-          for (const textArea of node.querySelectorAll(
-            DiscordSelectors.Textarea.textArea
-          )) {
-            this.patchTextArea(textArea);
-          }
+          messageId;
+        }
+
+        for (const textArea of node.querySelectorAll(
+          DiscordSelectors.Textarea.textArea
+        )) {
+          this.patchTextArea(textArea);
         }
       } else if (
         e.removedNodes.length &&
@@ -832,6 +915,7 @@ module.exports = (Plugin, Api) => {
         if (node.matches(DiscordSelectors.Textarea.textArea)) {
           this.unpatchTextArea(node);
         } else {
+          // TODO: invert so we go from latest to oldest
           for (const textArea of node.querySelectorAll(
             DiscordSelectors.Textarea.textArea
           )) {
@@ -846,7 +930,7 @@ module.exports = (Plugin, Api) => {
 
       regStrs?.forEach?.((regStr) => {
         if (!regStr) return;
-        output += `${regStr}|`;
+        output += `(${regStr})|`;
       });
 
       if (output) {
@@ -862,25 +946,26 @@ module.exports = (Plugin, Api) => {
 
     loadRuleTypes() {
       this.ruleTypes = {
-        pattern: ({
-          patterns,
-          negate = false,
-          regex = {},
-          ignore = {},
-        }) => {
-          regex = Object.assign({
-            escapeSpecialCharacters: false,
-            caseInsensitive: false,
-            multiline: false,
-            unicode: false,
-          });
-          ignore = Object.assign({
-            textUnderWordCount: 0,
-            emojis: false,
-            urls: false,
-            codeBlocks: false,
-            italics: false,
-          }, ignore);
+        pattern: ({ patterns, negate = false, regex = {}, ignore = {} }) => {
+          regex = Object.assign(
+            {
+              escapeSpecialCharacters: false,
+              caseInsensitive: false,
+              multiline: false,
+              unicode: false,
+            },
+            regex
+          );
+          ignore = Object.assign(
+            {
+              textUnderWordCount: 0,
+              emojis: false,
+              urls: false,
+              codeBlocks: false,
+              italics: false,
+            },
+            ignore
+          );
 
           if (!Array.isArray(patterns) || patterns.length <= 0)
             return { error: "'patterns' must be a non-empty array" };
@@ -953,25 +1038,26 @@ module.exports = (Plugin, Api) => {
           };
         },
 
-        word: ({
-          words,
-          negate = false,
-          regex = {},
-          ignore = {},
-        }) => {
-          regex = Object.assign({
-            escapeSpecialCharacters: true,
-            caseInsensitive: true,
-            multiline: false,
-            unicode: false,
-          }, regex);
-          ignore = Object.assign({
-            textUnderWordCount: 0,
-            emojis: true,
-            urls: true,
-            codeBlocks: false,
-            italics: false,
-          }, ignore);
+        word: ({ words, negate = false, regex = {}, ignore = {} }) => {
+          regex = Object.assign(
+            {
+              escapeSpecialCharacters: true,
+              caseInsensitive: true,
+              multiline: false,
+              unicode: false,
+            },
+            regex
+          );
+          ignore = Object.assign(
+            {
+              textUnderWordCount: 0,
+              emojis: true,
+              urls: true,
+              codeBlocks: false,
+              italics: false,
+            },
+            ignore
+          );
 
           // TODO: assert that every item in words is a non-empty string
           if (!Array.isArray(words) || words.length <= 0)
@@ -1020,8 +1106,6 @@ module.exports = (Plugin, Api) => {
             "gu"
           );
 
-          Logger.info(ignoresRegExpr);
-
           if (regex.escapeSpecialCharacters)
             words = words.map(this.escapeRegSpecialChars.bind(this));
 
@@ -1054,19 +1138,25 @@ module.exports = (Plugin, Api) => {
           regex = {},
           ignore = {},
         }) => {
-          regex = Object.assign({
-            escapeSpecialCharacters: true,
-            caseInsensitive: true,
-            multiline: false,
-            unicode: false,
-          }, regex);
-          ignore = Object.assign({
-            textUnderWordCount: 0,
-            emojis: true,
-            urls: true,
-            codeBlocks: false,
-            italics: false,
-          }, ignore);
+          regex = Object.assign(
+            {
+              escapeSpecialCharacters: true,
+              caseInsensitive: true,
+              multiline: false,
+              unicode: false,
+            },
+            regex
+          );
+          ignore = Object.assign(
+            {
+              textUnderWordCount: 0,
+              emojis: true,
+              urls: true,
+              codeBlocks: false,
+              italics: false,
+            },
+            ignore
+          );
 
           if (!Array.isArray(words) || words.length <= 0)
             return { error: "'words' must be a non-empty array" };
@@ -1151,10 +1241,13 @@ module.exports = (Plugin, Api) => {
           negate = false,
           ignore = {},
         }) => {
-          ignore = Object.assign({
-            codeBlocks: false,
-            italics: false,
-          }, ignore);
+          ignore = Object.assign(
+            {
+              codeBlocks: false,
+              italics: false,
+            },
+            ignore
+          );
 
           if (typeof min !== "number")
             return { error: "'min' must be a number" };
@@ -1211,12 +1304,15 @@ module.exports = (Plugin, Api) => {
             italics: false,
           },
         }) => {
-          ignore = Object.assign({
-            textUnderWordCount: 0,
-            fullCaps: false,
-            codeBlocks: false,
-            italics: false,
-          }, ignore);
+          ignore = Object.assign(
+            {
+              textUnderWordCount: 0,
+              fullCaps: false,
+              codeBlocks: false,
+              italics: false,
+            },
+            ignore
+          );
 
           if (typeof negate !== "boolean")
             return { error: "'negate' must be a boolean" };
@@ -1262,6 +1358,7 @@ module.exports = (Plugin, Api) => {
     }
 
     loadCodes(codesData) {
+      const currUserId = UserStore.getCurrentUser()?.id;
       this.codes = {};
 
       for (const codesDataKey in codesData) {
@@ -1274,12 +1371,18 @@ module.exports = (Plugin, Api) => {
 
         const codeData = codesData[codesDataKey];
 
+        if (codeData.trigger != null && typeof codeData.trigger !== "string") {
+          Logger.err(
+            `While loading '${codesDataKey}' code: 'trigger' must be a string`
+          );
+          continue;
+        }
         if (
-          codeData.description != null &&
-          typeof codeData.description !== "string"
+          codeData.messageOnTrigger != null &&
+          typeof codeData.messageOnTrigger !== "string"
         ) {
           Logger.err(
-            `While loading '${codesDataKey}' code: 'description' must be string`
+            `While loading '${codesDataKey}' code: 'messageOnTrigger' must be a string`
           );
           continue;
         }
@@ -1291,7 +1394,15 @@ module.exports = (Plugin, Api) => {
         }
 
         this.codes[codesDataKey] = {
-          description: codeData.description ?? "",
+          trigger: codeData.trigger
+            ? new RegExp(
+                Utilities.formatTString(codeData.trigger, {
+                  mention: `<@${currUserId}>`,
+                }),
+                "i"
+              )
+            : undefined,
+          messageOnTrigger: codeData.messageOnTrigger ?? "",
           rules: {},
         };
 
@@ -1336,7 +1447,8 @@ module.exports = (Plugin, Api) => {
           "(\\p{Extended_Pictographic}\\u{200D})*\\p{Extended_Pictographic}\\u{FE0F}?",
         customEmoji: "<a?:[\\w~]{2,}:\\d{18}>",
         url: "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*)",
-        codeBlocks: "(`[^`\\n\\r]+?`(?!`))|(``[^`\\n\\r]+?``(?!`))|(```(.|\\n|\\r)*?```)",
+        codeBlocks:
+          "(`[^`\\n\\r]+?`(?!`))|(``[^`\\n\\r]+?``(?!`))|(```(.|\\n|\\r)*?```)",
         italics:
           "(?<!(?<!\\\\)\\\\(\\\\\\\\)*|\\*)\\*(\\*\\*)*(?!\\*).+?(?<!(?<!\\\\)\\\\(\\\\\\\\)*|\\*)\\*(\\*\\*)*(?!\\*)",
       };
@@ -1353,7 +1465,6 @@ module.exports = (Plugin, Api) => {
     }
 
     // TODO: customizable code violation toast timeout
-    // TODO: custom exclude for empty messages
     // TODO: enumerate rules
     // TODO: exclude code blocks
     // TODO: consider filtering out noises where relevant
@@ -1363,6 +1474,214 @@ module.exports = (Plugin, Api) => {
     // TODO: exclude RPNonDialogue and exclude vocalizations
     // TODO: display a toast or something when the codes are refreshed
     // TODO: display notice when a rule or code fails to load
+    mapBinarySearch(arr, map, target, begin = 0, end = arr.length - 1) {
+      while (begin <= end) {
+        let mid = Math.floor((begin + end) / 2);
+
+        const value = map(arr[mid]);
+        if (value === target) return mid;
+        else if (value < target) begin = mid + 1;
+        else end = mid - 1;
+      }
+    }
+
+    matchTriggers(text) {
+      const triggeredCodesIds = [];
+      for (const codesKey in this.codes) {
+        const code = this.codes[codesKey];
+        if (code.trigger && text.match(code.trigger)) {
+          triggeredCodesIds.push(codesKey);
+        }
+      }
+
+      return triggeredCodesIds;
+    }
+
+    scanMessage(message) {
+      Logger.info(message);
+
+      const currUserId = UserStore.getCurrentUser()?.id;
+      let { data, value: channelData } = this.loadData(
+        `${currUserId}.channels.${message.channel_id}`,
+        {}
+      );
+
+      if (!channelData.scanForTriggers) return;
+
+      channelData.selectedCode = channelData.selectedCode ?? { option: 0 };
+      channelData.positivelyScannedMessages =
+        channelData.positivelyScannedMessages ?? {};
+
+      if (channelData.positivelyScannedMessages[message.id] !== undefined)
+        return;
+
+      const triggeredCodesIds = this.matchTriggers(message.content);
+      if (!triggeredCodesIds.length) return;
+
+      const chatContent = document.querySelector(".chatContent-3KubbW");
+      const elems = chatContent.querySelectorAll(
+        `.contents-2MsGLg [id^="message-content-"]`
+      );
+
+      const index = this.mapBinarySearch(
+        elems,
+        (elem) => elem.id.substring(16, elem.id.length),
+        message.id
+      );
+
+      if (index === undefined) return;
+
+      const { top, bottom } = elems[index].getBoundingClientRect();
+      if (bottom < 0 || window.innerHeight < top) return;
+
+      channelData.selectedCode = {
+        option: 2,
+        id: triggeredCodesIds[triggeredCodesIds.length - 1],
+      };
+      channelData.positivelyScannedMessages[message.id] = true;
+      for (const triggeredCodeId of triggeredCodesIds) {
+        // TODO: get name in guild if available
+        Api.Toasts.info(
+          Utilities.formatTString(
+            this.codes[triggeredCodeId].messageOnTrigger,
+            {
+              author: message.author.globalName,
+            }
+          ),
+          {
+            timeout: 5000,
+          }
+        );
+      }
+
+      this.saveData(currUserId, data);
+    }
+
+    scanVisibleMessages() {
+      const currUserId = UserStore.getCurrentUser()?.id;
+      const selectedChannelId =
+        SelectedChannelStore.getCurrentlySelectedChannelId();
+
+      let { data, value: channelData } = this.loadData(
+        `${currUserId}.channels.${selectedChannelId}`,
+        {}
+      );
+      
+      if (!channelData.scanForTriggers) return;
+
+      channelData.selectedCode = channelData.selectedCode ?? { option: 0 };
+      channelData.positivelyScannedMessages =
+        channelData.positivelyScannedMessages ?? {};
+
+      const chatContent = document.querySelector(".chatContent-3KubbW");
+      const elems = chatContent.querySelectorAll(
+        `.contents-2MsGLg [id^="message-content-"]`
+      );
+
+      if (!elems.length) return;
+
+      let begin = 0;
+      let end = elems.length - 1;
+      let visibleIndex = 0;
+      while (begin <= end) {
+        visibleIndex = Math.floor((begin + end) / 2);
+
+        const { top, bottom } = elems[visibleIndex].getBoundingClientRect();
+        if (bottom < 0) begin = visibleIndex + 1;
+        else if (window.innerHeight < top) end = visibleIndex - 1;
+        else break;
+      }
+
+      let topVisibleIndex = visibleIndex;
+      for (; 0 < topVisibleIndex; topVisibleIndex--) {
+        if (elems[topVisibleIndex].getBoundingClientRect().bottom < 0) {
+          break;
+        }
+      }
+
+      let bottomVisibleIndex = visibleIndex;
+      for (; bottomVisibleIndex < elems.length - 1; bottomVisibleIndex++) {
+        if (
+          window.innerHeight <
+          elems[bottomVisibleIndex].getBoundingClientRect().top
+        ) {
+          break;
+        }
+      }
+
+      const messages = MessageStore.getMessages(selectedChannelId)._array;
+
+      if (messages.length !== elems.length) {
+        Logger.warn(
+          "Discrepancy between the number of message contents and messages!"
+        );
+      }
+
+      let someMessageScannedPositively = false;
+      for (let i = topVisibleIndex; i <= bottomVisibleIndex; i++) {
+        if (
+          channelData.positivelyScannedMessages[messages[i].id] !== undefined ||
+          messages[i].state !== "SENT"
+        )
+          continue;
+
+        const triggeredCodesIds = this.matchTriggers(messages[i].content);
+        if (!triggeredCodesIds.length) continue;
+
+        channelData.selectedCode = {
+          option: 2,
+          id: triggeredCodesIds[triggeredCodesIds.length - 1],
+        };
+        someMessageScannedPositively = channelData.positivelyScannedMessages[
+          messages[i].id
+        ] = true;
+        for (const triggeredCodeId of triggeredCodesIds) {
+          // TODO: get name in guild if available
+          Api.Toasts.info(
+            Utilities.formatTString(
+              this.codes[triggeredCodeId].messageOnTrigger,
+              {
+                author: messages[i].author.globalName,
+              }
+            ),
+            {
+              timeout: 5000,
+            }
+          );
+        }
+      }
+
+      if (someMessageScannedPositively) this.saveData(currUserId, data);
+    }
+
+    patchDispatcher() {
+      Patcher.after(Dispatcher, "dispatch", (_0, args, _2) => {
+        const e = args[0];
+        if (!e) return;
+
+        if (e.type === "MESSAGE_CREATE") {
+          if (e.optimistic === true) return;
+
+          const selectedChannelId =
+            SelectedChannelStore.getCurrentlySelectedChannelId();
+          if (e.channelId !== selectedChannelId) return;
+
+          this.scanMessage(
+            MessageStore.getMessage(selectedChannelId, e.message.id)
+          );
+        } else if (e.type === "MESSAGE_UPDATE") {
+          const selectedChannelId =
+            SelectedChannelStore.getCurrentlySelectedChannelId();
+          if (e.message.channel_id !== selectedChannelId) return;
+
+          this.scanMessage(
+            MessageStore.getMessage(selectedChannelId, e.message.id)
+          );
+        } else if (e.type === "UPDATE_VISIBLE_MESSAGES") {
+          this.scanVisibleMessages();
+        }
+      });
+    }
 
     onStart() {
       DOMTools.addStyle(
@@ -1391,6 +1710,7 @@ module.exports = (Plugin, Api) => {
       }
 
       this.patchContextMenus();
+      this.patchDispatcher();
     }
 
     onStop() {
